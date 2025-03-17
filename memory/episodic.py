@@ -268,6 +268,18 @@ class EpisodicMemory:
         if self.memories:
             self.vector_index.rebuild_index("episodic", [m["text"] for m in self.memories])
     
+    def get_all(self, sort_by="importance"):
+        """
+        Возвращает все воспоминания, отсортированные по заданному критерию.
+        
+        Args:
+            sort_by (str): Критерий сортировки ("importance", "recency", "access_count")
+            
+        Returns:
+            list: Список всех воспоминаний
+        """
+        return self.sort(sort_by=sort_by)
+
     def clear(self):
         """
         Очищает все эпизодические воспоминания
@@ -279,5 +291,4 @@ class EpisodicMemory:
         self.memories = []          # Очищаем список воспоминаний
         self.vector_index.rebuild_index("episodic", [])  # Перестраиваем индекс
         return count               # Возвращаем количество удалённых записей
-    
     

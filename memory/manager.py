@@ -112,7 +112,9 @@ class MemoryManager:
     
     def get_episodic_memories(self, sort_by="importance"):
         """Получение всех эпизодических воспоминаний"""
-        return self.episodic_memory.get_all(sort_by)
+        if hasattr(self.episodic_memory, 'sort'):
+            return self.episodic_memory.sort(sort_by=sort_by)
+        return []
     
     def clear_episodic_memories(self):
         """

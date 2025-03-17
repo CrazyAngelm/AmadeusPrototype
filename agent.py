@@ -277,18 +277,38 @@ class CharacterAgent:
                 break
         
         # Определяем, является ли взаимодействие важным
-        is_important = importance_score >= 0.4
+        # Обновляем логику: если есть хотя бы один важный фактор - считаем важным
+        is_important = importance_score >= 0.4 or total_length > 300
         
         # Вопросы о персонаже часто важны
-        if self.character_name.lower() in user_message.lower() and '?' in user_message:
+        if self.character_name.lower() in user_message.lower():
             is_important = True
-            importance_score = max(importance_score, 0.6)
+            importance_score = max(importance_score, 0.5)
             if not category:
                 category = 'личное'
+        
+        # Проверяем наличие вопросительных знаков (важные вопросы)
+        if '?' in user_message and len(user_message) > 20:
+            importance_score = min(0.9, importance_score + 0.1)
+            is_important = True
+        
+        # Проверяем, содержит ли ответ персонажа много информации
+        if len(character_response) > 200:
+            importance_score = min(0.9, importance_score + 0.1)
+            is_important = True
         
         # Если взаимодействие содержит прямое обращение к персонажу, оно важнее
         if re.search(rf'\b{self.character_name}\b', user_message, re.IGNORECASE):
             importance_score = min(0.9, importance_score + 0.1)
+            is_important = True
+        
+        # Игнорируем служебные сообщения или сообщения об изменении отношений
+        if "[Ручное изменение отношения]" in user_message or "изменение отношений" in user_message.lower():
+            is_important = False
+        
+        # Проверяем на очень короткие сообщения с малой информационной ценностью
+        if len(user_message) < 10 and len(character_response) < 50:
+            is_important = False
         
         return is_important, importance_score, category, emotion
     
@@ -488,7 +508,7 @@ class CharacterAgent:
         # Генерация ответа с использованием выбранного LLM провайдера
         try:
             # Настройка температуры в зависимости от уровня стилизации
-            temperature_map = {'low': 0.5, 'medium': 0.7, 'high': 0.85}
+            temperature_map = {'low': 0.5, 'medium': 0.8, 'high': 1.2}
             temperature = temperature_map.get(self.style_level, 0.7)
             
             # Стоп-последовательности, чтобы избежать шаблонных фраз
@@ -531,7 +551,7 @@ class CharacterAgent:
                 
                 if is_important:
                     # Форматируем взаимодействие для сохранения
-                    interaction = f"[Взаимодействие]: Пользователь: '{user_message}'. {self.character_name}: '{answer}'"
+                    interaction = f"[Диалог] Пользователь: '{user_message}' -- {self.character_name}: '{answer}'"
                     
                     # Добавляем в эпизодическую память
                     memory_idx = self.memory.add_episodic_memory(
@@ -580,9 +600,25 @@ class CharacterAgent:
         return self.memory.update_episodic_memory_importance(memory_index, new_importance)
     
     def get_episodic_memories(self, sort_by="importance"):
+        """
+        Возвращает список эпизодических воспоминаний
+        
+        Args:
+            sort_by (str): Критерий сортировки
+            
+        Returns:
+            list: Список воспоминаний
+        """
         if not hasattr(self.memory, 'episodic_memory'):
             return []
-        return self.memory.episodic_memory.sort(sort_by=sort_by)
+        
+        try:
+            return self.memory.episodic_memory.sort(sort_by=sort_by)
+        except AttributeError:
+            # В случае ошибки пробуем получить через get_episodic_memories
+            if hasattr(self.memory, 'get_episodic_memories'):
+                return self.memory.get_episodic_memories(sort_by=sort_by)
+            return []
     
     def get_relationship_status(self):
         """

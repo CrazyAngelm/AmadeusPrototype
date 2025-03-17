@@ -332,7 +332,7 @@ async def relation_change_command(update: Update, context: ContextTypes.DEFAULT_
             )
             
             # Добавляем эпизодическое воспоминание об изменении отношений
-            memory_text = f"[Ручное изменение отношения]: {aspect_name} было {direction} на {abs(change):.2f}"
+            memory_text = f"[(Cheat)Ручное изменение отношения]: {aspect_name} было {direction} на {abs(change):.2f}"
             agent.add_episodic_memory(memory_text, importance=0.7, category="отношения")
         else:
             await update.message.reply_text(f"Ошибка при изменении отношений.")
@@ -348,8 +348,16 @@ async def memories_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         # Получаем агента 
         agent = session_manager.get_agent_for_user(user_id)
         
-        # Получаем список воспоминаний через доступный метод
-        memories = agent.get_episodic_memories(sort_by="importance")
+        # Получаем список воспоминаний через метод get_episodic_memories
+        try:
+            memories = agent.get_episodic_memories(sort_by="importance")
+        except Exception as e:
+            logger.error(f"Ошибка при получении воспоминаний: {str(e)}")
+            # Пробуем получить воспоминания напрямую через memory.episodic_memory
+            if hasattr(agent.memory, 'episodic_memory'):
+                memories = agent.memory.episodic_memory.sort(sort_by="importance")
+            else:
+                memories = []
         
         if not memories:
             await update.message.reply_text(

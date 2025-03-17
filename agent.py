@@ -483,7 +483,6 @@ class CharacterAgent:
         print(f"Отправка запроса в {self.llm.provider_name} ({self.llm.model_name})...")
         
         # Добавляем сообщение в кратковременную память перед отправкой запроса
-        # (это важно делать здесь, чтобы история не учитывалась дважды в промпте)
         self.memory.add_to_short_term_memory(f"Пользователь: {user_message}")
         
         # Генерация ответа с использованием выбранного LLM провайдера
@@ -525,13 +524,7 @@ class CharacterAgent:
                 if abs(relationship_changes['rapport_change']) > 0.01:
                     direction = "улучшилось" if relationship_changes['rapport_change'] > 0 else "ухудшилось"
                     print(f"Отношение {direction} на {abs(relationship_changes['rapport_change']):.2f}: {relationship_changes['reason']}")
-                    
-                    # Если изменение значительное, сохраняем его как эпизодическое воспоминание
-                    if abs(relationship_changes['rapport_change']) > 0.05 and remember_interactions:
-                        memory_text = f"[Изменение отношения]: {relationship_changes['reason']} ({direction} на {abs(relationship_changes['rapport_change']):.2f})"
-                        importance = 0.5 + abs(relationship_changes['rapport_change'])
-                        self.memory.add_episodic_memory(memory_text, importance=importance, category="отношения")
-                
+            
             # Если включено запоминание взаимодействий, проверяем, является ли это важным событием
             if remember_interactions:
                 is_important, importance, category, emotion = self._detect_important_event(user_message, answer)
@@ -557,7 +550,7 @@ class CharacterAgent:
             error_message = f"Ошибка при обращении к LLM API: {str(e)}"
             print(error_message)
             return error_message
-    
+
     def add_episodic_memory(self, text, importance=0.5, category=None, emotion=None):
         """
         Добавляет новое эпизодическое воспоминание
@@ -649,17 +642,9 @@ class CharacterAgent:
         Очищает все эпизодические воспоминания
         
         Returns:
-            int: Количество удаленных воспоминаний
+            int: Количество удалённых воспоминаний
         """
-        count = len(self.memory.episodic_memory) if hasattr(self.memory, 'episodic_memory') else 0
-        self.memory.episodic_memory = []
-        self.memory.memory_texts["episodic"] = []
-        
-        # Сбрасываем индекс, если он существует
-        if "episodic" in self.memory.indexes:
-            del self.memory.indexes["episodic"]
-        
-        return count
+        return self.memory.clear_episodic_memories()  # Вызываем метод MemoryManager
             
     def save_state(self):
         """

@@ -115,10 +115,13 @@ class MemoryManager:
         return self.episodic_memory.get_all(sort_by)
     
     def clear_episodic_memories(self):
-        """Очистка всех эпизодических воспоминаний"""
-        count = self.episodic_memory.clear()
-        self.memory_texts["episodic"] = []
-        return count
+        """
+        Очищает все эпизодические воспоминания
+        
+        Returns:
+            int: Количество удалённых воспоминаний
+        """
+        return self.episodic_memory.clear()  # Вызываем метод EpisodicMemory
     
     def save_to_file(self, file_path):
         """Сохранение состояния памяти в файл"""

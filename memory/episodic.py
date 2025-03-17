@@ -267,3 +267,17 @@ class EpisodicMemory:
         # Обновляем индекс после загрузки
         if self.memories:
             self.vector_index.rebuild_index("episodic", [m["text"] for m in self.memories])
+    
+    def clear(self):
+        """
+        Очищает все эпизодические воспоминания
+        
+        Returns:
+            int: Количество удалённых воспоминаний
+        """
+        count = len(self.memories)  # Подсчитываем количество воспоминаний
+        self.memories = []          # Очищаем список воспоминаний
+        self.vector_index.rebuild_index("episodic", [])  # Перестраиваем индекс
+        return count               # Возвращаем количество удалённых записей
+    
+    

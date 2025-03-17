@@ -10,7 +10,6 @@ import json
 import logging
 import re
 import asyncio
-import hashlib
 from datetime import datetime
 from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -31,20 +30,13 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Состояния для конечного автомата ConversationHandler
-SELECTING_CHARACTER = 1
 ADDING_MEMORY = 2
 SETTING_IMPORTANCE = 3
 SELECTING_RELATIONSHIP = 4
 CHANGING_RELATIONSHIP = 5
-SELECTING_PROVIDER = 6  # Новое состояние для выбора провайдера
-SELECTING_MODEL = 7     # Новое состояние для выбора модели
 
 # Инициализация менеджера сессий
 session_manager = SessionManager()
-
-# Кэш для временного хранения данных о персонажах и моделях
-char_cache = {}  # Для хранения {hash: character_name}
-model_cache = {}  # Для хранения {hash: (provider, model)}
 
 # Получаем токен бота из переменных окружения
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -78,14 +70,17 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "Доступные команды:\n\n"
         "/start - Начать общение\n"
         "/help - Показать это сообщение\n"
-        "/character - Сменить персонажа\n"
+        "/character [имя персонажа] - Сменить персонажа\n"
         "/characters - Показать список доступных персонажей\n"
-        "/model - Выбрать провайдера и модель LLM\n"
+        "/model [провайдер] [модель] - Выбрать провайдера и модель LLM\n"
         "/relationship - Посмотреть текущие отношения персонажа к вам\n"
         "/memories - Управление эпизодической памятью персонажа\n"
         "/clear_memory - Очистить эпизодическую память\n"
         "/save - Сохранить текущее состояние\n"
         "/providers - Показать доступные LLM провайдеры\n\n"
+        "Примеры использования:\n"
+        "/character Шерлок Холмс - переключиться на персонажа Шерлока Холмса\n"
+        "/model openai gpt-4o-mini - переключиться на модель OpenAI GPT-4o-mini\n\n"
         "Просто отправьте сообщение, чтобы пообщаться с текущим персонажем."
     )
     
@@ -105,7 +100,7 @@ async def characters_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         characters_text += f"• {name} ({era})\n"
         characters_text += f"  {desc}\n\n"
     
-    characters_text += "Используйте команду /character для смены персонажа."
+    characters_text += "Используйте команду /character [имя персонажа] для смены персонажа."
     
     await update.message.reply_text(characters_text)
 
@@ -124,184 +119,100 @@ async def providers_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         
         providers_text += "\n"
     
-    providers_text += "Текущая конфигурация бота использует провайдер, заданный в настройках."
+    providers_text += "Используйте команду /model [провайдер] [модель] для смены модели."
     
     await update.message.reply_text(providers_text)
 
-def hash_string(text):
-    """Создает короткий хеш из строки для использования в callback_data"""
-    h = hashlib.md5(text.encode()).hexdigest()
-    return h[:8]  # Берем первые 8 символов для краткости
+async def character_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Обработчик команды /character [имя персонажа]"""
+    user_id = str(update.effective_user.id)
+    args = context.args
+    
+    # Если аргументы не переданы, показываем список персонажей
+    if not args:
+        available_characters = session_manager.get_available_characters()
+        character_list = "Для смены персонажа введите: /character [имя персонажа]\n\nДоступные персонажи:\n"
+        
+        for name, _ in available_characters:
+            character_list += f"• {name}\n"
+        
+        await update.message.reply_text(character_list)
+        return
+    
+    # Соединяем аргументы в полное имя персонажа
+    character_name = " ".join(args)
+    
+    # Меняем персонажа
+    if session_manager.change_character(user_id, character_name):
+        await update.message.reply_text(f"Теперь вы общаетесь с персонажем {character_name}.")
+    else:
+        # Проверяем, может есть персонаж с похожим именем
+        available_characters = session_manager.get_available_characters()
+        character_names = [name for name, _ in available_characters]
+        
+        # Пытаемся найти похожее имя (без учета регистра)
+        possible_matches = [name for name in character_names 
+                           if character_name.lower() in name.lower()]
+        
+        if possible_matches:
+            suggestion_text = "Персонаж не найден. Возможно, вы имели в виду:\n"
+            for name in possible_matches:
+                suggestion_text += f"• {name}\n"
+            
+            await update.message.reply_text(suggestion_text)
+        else:
+            await update.message.reply_text(
+                f"Ошибка: персонаж '{character_name}' не найден. "
+                f"Используйте /characters для просмотра списка доступных персонажей."
+            )
 
-async def model_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Обработчик команды /model - выбор провайдера и модели LLM"""
-    # Получаем список доступных провайдеров
-    available_providers = list_available_providers()
+async def model_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Обработчик команды /model [провайдер] [модель]"""
+    user_id = str(update.effective_user.id)
+    args = context.args
     
-    # Очищаем кэш моделей
-    model_cache.clear()
+    # Если аргументы не переданы, показываем информацию об использовании
+    if not args or len(args) < 2:
+        await update.message.reply_text(
+            "Для смены модели введите: /model [провайдер] [модель]\n\n"
+            "Например: /model openai gpt-4o-mini\n\n"
+            "Используйте /providers для просмотра доступных провайдеров и моделей."
+        )
+        return
     
-    # Создаем клавиатуру с кнопками для каждого провайдера
-    keyboard = []
-    for provider_name in available_providers.keys():
-        prov_hash = hash_string(f"prov_{provider_name}")
-        model_cache[prov_hash] = provider_name
-        keyboard.append([InlineKeyboardButton(provider_name.upper(), callback_data=f"p_{prov_hash}")])
+    provider_name = args[0].lower()
+    model_name = args[1]
     
-    # Добавляем кнопку отмены
-    keyboard.append([InlineKeyboardButton("Отмена", callback_data="p_cancel")])
+    # Если модель содержит пробелы, соединяем оставшиеся аргументы
+    if len(args) > 2:
+        model_name = " ".join(args[1:])
     
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    await update.message.reply_text(
-        "Выберите провайдера LLM:",
-        reply_markup=reply_markup
-    )
-    
-    return SELECTING_PROVIDER
-
-async def provider_selected(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Обработчик выбора провайдера LLM"""
-    query = update.callback_query
-    await query.answer()
-    
-    callback_data = query.data
-    
-    if callback_data == "p_cancel":
-        await query.edit_message_text("Выбор модели отменен.")
-        return ConversationHandler.END
-    
-    # Извлекаем хеш провайдера из callback_data
-    prov_hash = callback_data.replace("p_", "")
-    provider_name = model_cache.get(prov_hash)
-    
-    if not provider_name:
-        await query.edit_message_text("Ошибка: недействительный выбор провайдера.")
-        return ConversationHandler.END
-    
-    context.user_data['selected_provider'] = provider_name
-    
-    # Получаем список моделей для этого провайдера
+    # Проверяем доступность провайдера
     available_providers = list_available_providers()
     if provider_name not in available_providers:
-        await query.edit_message_text(f"Ошибка: провайдер '{provider_name}' не найден.")
-        return ConversationHandler.END
-    
-    models = available_providers[provider_name]['models']
-    
-    # Создаем клавиатуру с кнопками для каждой модели
-    keyboard = []
-    for model_name in models:
-        model_hash = hash_string(f"model_{model_name}")
-        model_cache[model_hash] = (provider_name, model_name)
-        keyboard.append([InlineKeyboardButton(model_name, callback_data=f"m_{model_hash}")])
-    
-    # Добавляем кнопку отмены
-    keyboard.append([InlineKeyboardButton("Отмена", callback_data="m_cancel")])
-    
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    await query.edit_message_text(
-        f"Выберите модель для провайдера {provider_name.upper()}:",
-        reply_markup=reply_markup
-    )
-    
-    return SELECTING_MODEL
-
-async def model_selected(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Обработчик выбора модели LLM"""
-    query = update.callback_query
-    await query.answer()
-    
-    user_id = str(query.from_user.id)
-    callback_data = query.data
-    
-    if callback_data == "m_cancel":
-        await query.edit_message_text("Выбор модели отменен.")
-        return ConversationHandler.END
-    
-    # Извлекаем хеш модели из callback_data
-    model_hash = callback_data.replace("m_", "")
-    provider_and_model = model_cache.get(model_hash)
-    
-    if not provider_and_model:
-        await query.edit_message_text("Ошибка: недействительный выбор модели.")
-        return ConversationHandler.END
-    
-    provider_name, model_name = provider_and_model
+        provider_list = ", ".join(available_providers.keys())
+        await update.message.reply_text(
+            f"Ошибка: провайдер '{provider_name}' не найден.\n"
+            f"Доступные провайдеры: {provider_list}"
+        )
+        return
     
     # Меняем модель для агента пользователя
     agent = session_manager.get_agent_for_user(user_id)
     try:
         # Обновляем параметры LLM
-        agent.llm_provider_name = provider_name
-        agent.llm_model_name = model_name
+        success = agent.setup_llm(provider_name=provider_name, model_name=model_name)
         
-        # Переинициализируем LLM провайдера
-        from llm_provider import get_provider
-        agent.llm = get_provider(provider_name=provider_name, model_name=model_name)
-        
-        await query.edit_message_text(f"Модель успешно изменена на {provider_name.upper()}/{model_name}.")
+        if success:
+            await update.message.reply_text(
+                f"Модель успешно изменена на {provider_name.upper()}/{model_name}."
+            )
+        else:
+            await update.message.reply_text(
+                f"Ошибка при смене модели. Проверьте название модели и повторите попытку."
+            )
     except Exception as e:
-        await query.edit_message_text(f"Ошибка при смене модели: {str(e)}")
-    
-    return ConversationHandler.END
-
-async def switch_character(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Обработчик команды /character - шаг 1: выбор персонажа"""
-    # Получаем список доступных персонажей
-    characters = session_manager.get_available_characters()
-    
-    # Очищаем кэш персонажей
-    char_cache.clear()
-    
-    # Создаем клавиатуру с кнопками для каждого персонажа
-    keyboard = []
-    for name, desc in characters:
-        # Используем короткий хеш для избежания проблем с длиной callback_data
-        char_hash = hash_string(name)
-        char_cache[char_hash] = name
-        keyboard.append([InlineKeyboardButton(name, callback_data=f"c_{char_hash}")])
-    
-    # Добавляем кнопку отмены
-    keyboard.append([InlineKeyboardButton("Отмена", callback_data="c_cancel")])
-    
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    await update.message.reply_text(
-        "Выберите персонажа:",
-        reply_markup=reply_markup
-    )
-    
-    return SELECTING_CHARACTER
-
-async def character_selected(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Обработчик выбора персонажа"""
-    query = update.callback_query
-    await query.answer()
-    
-    user_id = str(query.from_user.id)
-    callback_data = query.data
-    
-    if callback_data == "c_cancel":
-        await query.edit_message_text("Смена персонажа отменена.")
-        return ConversationHandler.END
-    
-    # Извлекаем хеш персонажа из callback_data
-    char_hash = callback_data.replace("c_", "")
-    character_name = char_cache.get(char_hash)
-    
-    if not character_name:
-        await query.edit_message_text("Ошибка: недействительный выбор персонажа.")
-        return ConversationHandler.END
-    
-    # Меняем персонажа
-    if session_manager.change_character(user_id, character_name):
-        await query.edit_message_text(f"Теперь вы общаетесь с персонажем {character_name}.")
-    else:
-        await query.edit_message_text(f"Ошибка: персонаж '{character_name}' не найден.")
-    
-    return ConversationHandler.END
+        await update.message.reply_text(f"Ошибка при смене модели: {str(e)}")
 
 async def show_relationship(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обработчик команды /relationship"""
@@ -708,16 +619,6 @@ def main() -> None:
     # Создаем приложение
     application = Application.builder().token(TOKEN).post_init(post_init).build()
     
-    # Регистрируем обработчик выбора персонажа
-    character_conv_handler = ConversationHandler(
-        entry_points=[CommandHandler('character', switch_character)],
-        states={
-            SELECTING_CHARACTER: [CallbackQueryHandler(character_selected, pattern=r'^c_')],
-        },
-        fallbacks=[CommandHandler('cancel', lambda u, c: ConversationHandler.END)],
-        per_chat=True
-    )
-    
     # Регистрируем обработчик добавления воспоминания
     memory_conv_handler = ConversationHandler(
         entry_points=[CallbackQueryHandler(start_add_memory, pattern=r'^add_memory$')],
@@ -740,32 +641,21 @@ def main() -> None:
         per_chat=True
     )
     
-    # Регистрируем обработчик выбора модели LLM
-    model_conv_handler = ConversationHandler(
-        entry_points=[CommandHandler('model', model_command)],
-        states={
-            SELECTING_PROVIDER: [CallbackQueryHandler(provider_selected, pattern=r'^p_')],
-            SELECTING_MODEL: [CallbackQueryHandler(model_selected, pattern=r'^m_')],
-        },
-        fallbacks=[CommandHandler('cancel', lambda u, c: ConversationHandler.END)],
-        per_chat=True
-    )
-    
     # Добавляем обработчики команд
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("character", character_command))
     application.add_handler(CommandHandler("relationship", show_relationship))
     application.add_handler(CommandHandler("memories", memories_command))
     application.add_handler(CommandHandler("save", save_state))
     application.add_handler(CommandHandler("characters", characters_command))
     application.add_handler(CommandHandler("providers", providers_command))
     application.add_handler(CommandHandler("clear_memory", clear_memory_command))
+    application.add_handler(CommandHandler("model", model_command))
     
     # Добавляем обработчики разговоров
-    application.add_handler(character_conv_handler)
     application.add_handler(memory_conv_handler)
     application.add_handler(relationship_conv_handler)
-    application.add_handler(model_conv_handler)
     
     # Добавляем обработчики callback-запросов
     application.add_handler(CallbackQueryHandler(clear_memory_confirm, pattern=r'^clear_memory$'))

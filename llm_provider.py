@@ -334,7 +334,7 @@ class DeepSeekProvider(LLMProvider):
         
         # Словарь с информацией о моделях
         self._models_info = {
-        "deepseek-v3": {
+        "deepseek-chat": {
             "description": "Модель с улучшенными возможностями рассуждений, превосходящая Llama 3.1 и Qwen 2.5, сопоставимая с GPT-4o и Claude 3.5 Sonnet",
             "max_tokens": 128000,
             "cost_per_1k_input": "$2.00",
@@ -345,12 +345,6 @@ class DeepSeekProvider(LLMProvider):
             "max_tokens": 128000,
             "cost_per_1k_input": "$1.50",
             "cost_per_1k_output": "$1.50"
-        },
-        "deepseek-chat": {
-            "description": "Многоязычная чат-модель общего назначения, оптимизированная для интерактивного общения",
-            "max_tokens": 4096,
-            "cost_per_1k_input": "$0.20",
-            "cost_per_1k_output": "$0.80"
         }
     }
 
@@ -487,17 +481,31 @@ def list_available_providers():
     providers = {
         "openai": {
             "description": "Провайдер для моделей OpenAI",
-            "models": ["gpt-4o", "gpt-4o-mini", "gpt-3.5-turbo"]
+            "models": [
+                "gpt-4.5",
+                "gpt-4o",
+                "gpt-4o-mini",
+                "gpt-3.5-turbo",
+                "openai-o3-mini"
+            ]
         },
         "anthropic": {
             "description": "Провайдер для моделей Anthropic Claude",
-            "models": ["claude-3-opus-20240229", "claude-3-sonnet-20240229", "claude-3-haiku-20240307"]
+            "models": [
+                "claude-3.7-sonnet-20250224",
+                "claude-3.5-sonnet-20250210",
+                "claude-3-haiku-20240307"
+            ]
         },
         "deepseek": {
             "description": "Провайдер для моделей DeepSeek",
-            "models": ["deepseek-chat", "deepseek-coder"]
+            "models": [
+                "deepseek-chat",
+                "deepseek-r1"
+            ]
         }
     }
+
     
     return providers
 

@@ -1,0 +1,12 @@
+python main.py --reset --index-type hnsw --metric cosine
+
+python main.py --index-type hnsw --metric cosine --top-k 4 --relevance-method sigmoid --min-relevance 0.25 --character "Курису Макисэ"
+
+python main.py --index-type hnsw --metric cosine --top-k 4 --style high --character "Курису Макисэ"
+
+python main.py --character "Курису Макисэ" --index-type hnsw --metric cosine --style high --llm-provider openai --llm-model gpt-4o-mini
+
+
+python main.py --character "Курису Макисэ" --index-type hnsw --metric cosine --style high --llm-provider deepseek --llm-model deepseek-chat
+
+python main.py --character "Курису Макисэ" --index-type hnsw --metric cosine --style high --llm-provider anthropic --llm-model claude-3-haiku-20240307

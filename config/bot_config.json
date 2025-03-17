@@ -1,0 +1,10 @@
+{
+  "default_character": "Курису Макисэ",
+  "default_llm_provider": "deepseek",
+  "default_llm_model": "deepseek-chat",
+  "default_style_level": "high",
+  "default_index_type": "flat",
+  "session_timeout": 86400,
+  "auto_save_interval": 600,
+  "max_inactive_sessions": 100
+}

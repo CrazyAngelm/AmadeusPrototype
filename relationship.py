@@ -8,15 +8,101 @@
 import time
 import json
 import re
+import logging
 from datetime import datetime
+from typing import Dict, List, Any, Optional, Tuple
+
+logger = logging.getLogger(__name__)
+
+class RelationshipAspect:
+    """
+    Представляет один аспект отношений (уважение, доверие, симпатия, терпение)
+    """
+    
+    def __init__(self, name: str, initial_value: float = 0.0, weight: float = 0.25):
+        """
+        Инициализация аспекта отношений
+        
+        Args:
+            name (str): Название аспекта
+            initial_value (float): Начальное значение (-1.0 до 1.0)
+            weight (float): Вес аспекта в общей оценке отношений
+        """
+        self.name = name
+        self.value = max(-1.0, min(1.0, initial_value))
+        self.weight = weight
+    
+    def update(self, change: float) -> float:
+        """
+        Обновление значения аспекта
+        
+        Args:
+            change (float): Величина изменения
+            
+        Returns:
+            float: Новое значение
+        """
+        old_value = self.value
+        self.value = max(-1.0, min(1.0, self.value + change))
+        return self.value - old_value
+    
+    def get_description(self) -> str:
+        """
+        Получение текстового описания аспекта
+        
+        Returns:
+            str: Описание аспекта
+        """
+        if self.value > 0.7:
+            return f"очень высокое {self.name}"
+        elif self.value > 0.3:
+            return f"высокое {self.name}"
+        elif self.value > -0.3:
+            return f"нейтральное {self.name}"
+        elif self.value > -0.7:
+            return f"низкое {self.name}"
+        else:
+            return f"очень низкое {self.name}"
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """
+        Сериализация аспекта
+        
+        Returns:
+            Dict: Словарь с данными
+        """
+        return {
+            "name": self.name,
+            "value": self.value,
+            "weight": self.weight
+        }
+    
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'RelationshipAspect':
+        """
+        Десериализация аспекта
+        
+        Args:
+            data (Dict): Словарь с данными
+            
+        Returns:
+            RelationshipAspect: Объект аспекта
+        """
+        return cls(
+            name=data.get("name", ""),
+            initial_value=data.get("value", 0.0),
+            weight=data.get("weight", 0.25)
+        )
+
 
 class Relationship:
     """
     Класс для отслеживания отношений персонажа к пользователю
     """
     
-    def __init__(self, character_name, initial_rapport=0.0, 
-                 initial_aspects=None, personality_factors=None):
+    def __init__(self, character_name: str, initial_rapport: float = 0.0, 
+                 initial_aspects: Optional[Dict[str, float]] = None, 
+                 personality_factors: Optional[Dict[str, float]] = None):
         """
         Инициализация отношений
         
@@ -31,13 +117,25 @@ class Relationship:
         # Общий уровень отношений (от -1.0 до 1.0)
         self.rapport = initial_rapport
         
-        # Аспекты отношений
-        self.aspects = initial_aspects or {
-            "respect": 0.0,    # уважение
-            "trust": 0.0,      # доверие
-            "liking": 0.0,     # симпатия
-            "patience": 0.0    # терпение
+        # Инициализация аспектов отношений с весами
+        aspect_weights = {
+            "respect": 0.3,    # уважение
+            "trust": 0.3,      # доверие
+            "liking": 0.25,    # симпатия
+            "patience": 0.15   # терпение
         }
+        
+        init_values = initial_aspects or {
+            "respect": 0.0,
+            "trust": 0.0,
+            "liking": 0.0,
+            "patience": 0.0
+        }
+        
+        self.aspects = {}
+        for name, weight in aspect_weights.items():
+            value = init_values.get(name, 0.0)
+            self.aspects[name] = RelationshipAspect(name, value, weight)
         
         # Факторы личности персонажа, влияющие на изменение отношений
         self.personality_factors = personality_factors or {
@@ -52,17 +150,24 @@ class Relationship:
         # История изменений отношений
         self.history = []
         
-        # Временная метка создания
+        # Временные метки
         self.created_at = time.time()
         self.last_updated = time.time()
         
         # Сохраняем начальное состояние в историю
-        self._add_to_history("Начальное состояние", 
-                            self.rapport, 
-                            self.aspects.copy(), 
-                            0.0)
+        self._add_to_history("Начальное состояние", self.rapport, self._get_aspect_values(), 0.0)
     
-    def _add_to_history(self, reason, rapport, aspects, change_magnitude):
+    def _get_aspect_values(self) -> Dict[str, float]:
+        """
+        Получение текущих значений всех аспектов
+        
+        Returns:
+            Dict[str, float]: Словарь с значениями аспектов
+        """
+        return {name: aspect.value for name, aspect in self.aspects.items()}
+    
+    def _add_to_history(self, reason: str, rapport: float, aspects: Dict[str, float], 
+                       change_magnitude: float) -> None:
         """
         Добавляет изменение отношений в историю
         
@@ -90,7 +195,7 @@ class Relationship:
         if len(self.history) > 50:
             self.history = self.history[-50:]
     
-    def update_from_interaction(self, user_message, character_response):
+    def update_from_interaction(self, user_message: str, character_response: str) -> Dict[str, Any]:
         """
         Обновляет отношения на основе взаимодействия
         
@@ -104,7 +209,6 @@ class Relationship:
         # Нормализуем текст для анализа
         user_text = user_message.lower()
         response_text = character_response.lower()
-        full_interaction = f"{user_text} {response_text}"
         
         # Анализ текста для выявления факторов, влияющих на отношения
         factors = self._analyze_interaction(user_text, response_text)
@@ -112,26 +216,18 @@ class Relationship:
         # Рассчитываем изменения в аспектах отношений
         aspect_changes = self._calculate_aspect_changes(factors)
         
-        # Применяем изменения
+        # Сохраняем старые значения для расчета изменений
         old_rapport = self.rapport
-        old_aspects = self.aspects.copy()
+        old_aspects = self._get_aspect_values()
         
         # Обновляем аспекты
-        for aspect, change in aspect_changes.items():
-            if aspect in self.aspects:
-                self.aspects[aspect] = max(-1.0, min(1.0, self.aspects[aspect] + change))
+        for aspect_name, change in aspect_changes.items():
+            if aspect_name in self.aspects:
+                self.aspects[aspect_name].update(change)
         
         # Рассчитываем новый общий уровень отношений как взвешенное среднее аспектов
-        weights = {
-            "respect": 0.3,
-            "trust": 0.3,
-            "liking": 0.25,
-            "patience": 0.15
-        }
-        
-        weighted_sum = sum(self.aspects[aspect] * weights.get(aspect, 0.25) 
-                          for aspect in self.aspects)
-        total_weight = sum(weights.get(aspect, 0.25) for aspect in self.aspects)
+        weighted_sum = sum(aspect.value * aspect.weight for aspect in self.aspects.values())
+        total_weight = sum(aspect.weight for aspect in self.aspects.values())
         
         self.rapport = max(-1.0, min(1.0, weighted_sum / total_weight))
         
@@ -145,16 +241,18 @@ class Relationship:
         
         # Добавляем в историю, если произошло значимое изменение
         if change_magnitude > 0.01:
-            self._add_to_history(reason, self.rapport, self.aspects, change_magnitude)
+            self._add_to_history(reason, self.rapport, self._get_aspect_values(), change_magnitude)
         
         # Формируем результат для возврата
+        new_aspects = self._get_aspect_values()
+        
         result = {
             "old_rapport": old_rapport,
             "new_rapport": self.rapport,
             "rapport_change": self.rapport - old_rapport,
             "aspect_changes": {
-                aspect: self.aspects[aspect] - old_aspects.get(aspect, 0.0)
-                for aspect in self.aspects
+                aspect: new_aspects[aspect] - old_aspects[aspect]
+                for aspect in new_aspects
             },
             "reason": reason,
             "magnitude": change_magnitude
@@ -162,7 +260,7 @@ class Relationship:
         
         return result
     
-    def _analyze_interaction(self, user_text, response_text):
+    def _analyze_interaction(self, user_text: str, response_text: str) -> Dict[str, float]:
         """
         Анализирует взаимодействие для выявления факторов, влияющих на отношения
         
@@ -171,7 +269,7 @@ class Relationship:
             response_text (str): Ответ персонажа (в нижнем регистре)
             
         Returns:
-            dict: Факторы, влияющие на отношения
+            Dict[str, float]: Факторы, влияющие на отношения
         """
         factors = {}
         
@@ -211,7 +309,7 @@ class Relationship:
             if indicator in user_text:
                 factors["politeness"] += 0.1
         
-        # Проверяем наличие интересных вопросов (для интеллектуальных персонажей)
+        # Проверяем наличие интересных вопросов
         factors["intellectual_stimulation"] = 0.0
         intellectual_indicators = [
             "почему", "как вы думаете", "что вы считаете", "ваше мнение",
@@ -245,15 +343,15 @@ class Relationship:
         
         return factors
     
-    def _calculate_aspect_changes(self, factors):
+    def _calculate_aspect_changes(self, factors: Dict[str, float]) -> Dict[str, float]:
         """
         Рассчитывает изменения в аспектах отношений на основе выявленных факторов
         
         Args:
-            factors (dict): Факторы, влияющие на отношения
+            factors (Dict[str, float]): Факторы, влияющие на отношения
             
         Returns:
-            dict: Изменения в различных аспектах отношений
+            Dict[str, float]: Изменения в различных аспектах отношений
         """
         changes = {
             "respect": 0.0,
@@ -310,13 +408,14 @@ class Relationship:
         
         return changes
     
-    def _determine_change_reason(self, factors, aspect_changes):
+    def _determine_change_reason(self, factors: Dict[str, float], 
+                                aspect_changes: Dict[str, float]) -> str:
         """
         Определяет основную причину изменения отношений
         
         Args:
-            factors (dict): Факторы, влияющие на отношения
-            aspect_changes (dict): Изменения в аспектах отношений
+            factors (Dict[str, float]): Факторы, влияющие на отношения
+            aspect_changes (Dict[str, float]): Изменения в аспектах отношений
             
         Returns:
             str: Основная причина изменения
@@ -356,12 +455,12 @@ class Relationship:
         
         return f"{direction} {aspect_name} из-за фактора: {factor_desc}"
     
-    def get_status_description(self):
+    def get_status_description(self) -> Dict[str, Any]:
         """
         Возвращает описание текущего статуса отношений в человекочитаемом формате
         
         Returns:
-            dict: Описание статуса отношений
+            Dict[str, Any]: Описание статуса отношений
         """
         # Определяем общий уровень отношений
         if self.rapport > 0.8:
@@ -385,54 +484,10 @@ class Relationship:
         
         # Определяем описания аспектов
         aspect_descriptions = {}
-        for aspect, value in self.aspects.items():
-            if aspect == "respect":
-                if value > 0.7:
-                    aspect_descriptions[aspect] = "высокое уважение"
-                elif value > 0.3:
-                    aspect_descriptions[aspect] = "уважение"
-                elif value > -0.3:
-                    aspect_descriptions[aspect] = "нейтральное отношение"
-                elif value > -0.7:
-                    aspect_descriptions[aspect] = "неуважение"
-                else:
-                    aspect_descriptions[aspect] = "презрение"
-            
-            elif aspect == "trust":
-                if value > 0.7:
-                    aspect_descriptions[aspect] = "полное доверие"
-                elif value > 0.3:
-                    aspect_descriptions[aspect] = "доверие"
-                elif value > -0.3:
-                    aspect_descriptions[aspect] = "осторожность"
-                elif value > -0.7:
-                    aspect_descriptions[aspect] = "недоверие"
-                else:
-                    aspect_descriptions[aspect] = "полное недоверие"
-            
-            elif aspect == "liking":
-                if value > 0.7:
-                    aspect_descriptions[aspect] = "сильная симпатия"
-                elif value > 0.3:
-                    aspect_descriptions[aspect] = "симпатия"
-                elif value > -0.3:
-                    aspect_descriptions[aspect] = "нейтральное отношение"
-                elif value > -0.7:
-                    aspect_descriptions[aspect] = "неприязнь"
-                else:
-                    aspect_descriptions[aspect] = "сильная неприязнь"
-            
-            elif aspect == "patience":
-                if value > 0.7:
-                    aspect_descriptions[aspect] = "исключительное терпение"
-                elif value > 0.3:
-                    aspect_descriptions[aspect] = "терпение"
-                elif value > -0.3:
-                    aspect_descriptions[aspect] = "умеренное терпение"
-                elif value > -0.7:
-                    aspect_descriptions[aspect] = "нетерпение"
-                else:
-                    aspect_descriptions[aspect] = "полное нетерпение"
+        aspect_values = self._get_aspect_values()
+        
+        for aspect_name, aspect in self.aspects.items():
+            aspect_descriptions[aspect_name] = aspect.get_description()
         
         # Получаем последнее изменение
         last_change = self.history[-1] if self.history else None
@@ -448,11 +503,11 @@ class Relationship:
             "overall": rapport_desc,
             "rapport_value": self.rapport,
             "aspects": aspect_descriptions,
-            "aspect_values": self.aspects,
+            "aspect_values": aspect_values,
             "last_change": last_change_desc
         }
     
-    def get_relationship_summary_for_prompt(self):
+    def get_relationship_summary_for_prompt(self) -> str:
         """
         Возвращает краткое описание отношений для включения в промпт
         
@@ -461,39 +516,79 @@ class Relationship:
         """
         status = self.get_status_description()
         
-        summary = f"ТВОЕ ОТНОШЕНИЕ К СОБЕСЕДНИКУ: {status['overall']} (уровень: {status['rapport_value']:.2f})\n\n"
+        summary = f"ТВОЕ ОТНОШЕНИЕ К СОБЕСЕДНИКУ: {status['overall']} (уровень: {self.rapport:.2f})\n\n"
         
         summary += "Аспекты отношений:\n"
-        for aspect, desc in status['aspects'].items():
-            aspect_name = aspect.capitalize()
-            if aspect == "respect":
-                aspect_name = "Уважение"
-            elif aspect == "trust":
-                aspect_name = "Доверие"
-            elif aspect == "liking":
-                aspect_name = "Симпатия"
-            elif aspect == "patience":
-                aspect_name = "Терпение"
+        for aspect_name, desc in status['aspects'].items():
+            aspect_name_rus = {
+                "respect": "Уважение",
+                "trust": "Доверие",
+                "liking": "Симпатия",
+                "patience": "Терпение"
+            }.get(aspect_name, aspect_name.capitalize())
             
-            value = status['aspect_values'][aspect]
-            summary += f"- {aspect_name}: {desc} ({value:.2f})\n"
+            value = status['aspect_values'][aspect_name]
+            summary += f"- {aspect_name_rus}: {desc} ({value:.2f})\n"
         
         if status['last_change']:
             summary += f"\nПоследнее изменение: {status['last_change']['reason']}\n"
         
         return summary
     
-    def to_dict(self):
+    def update_aspect(self, aspect_name: str, change: float) -> bool:
+        """
+        Вручную изменяет указанный аспект отношений
+        
+        Args:
+            aspect_name (str): Название аспекта ('rapport', 'respect', 'trust', 'liking', 'patience')
+            change (float): Величина изменения (-1.0 до 1.0)
+            
+        Returns:
+            bool: True если обновление успешно, False в противном случае
+        """
+        if aspect_name == 'rapport':
+            old_value = self.rapport
+            self.rapport = max(-1.0, min(1.0, old_value + change))
+            
+            # Добавляем в историю
+            self._add_to_history(
+                "Ручное изменение общего отношения", 
+                self.rapport, 
+                self._get_aspect_values(),
+                abs(change)
+            )
+            return True
+        elif aspect_name in self.aspects:
+            # Обновляем аспект
+            actual_change = self.aspects[aspect_name].update(change)
+            
+            # Обновляем общее отношение
+            weighted_sum = sum(aspect.value * aspect.weight for aspect in self.aspects.values())
+            total_weight = sum(aspect.weight for aspect in self.aspects.values())
+            self.rapport = max(-1.0, min(1.0, weighted_sum / total_weight))
+            
+            # Добавляем в историю
+            self._add_to_history(
+                f"Ручное изменение аспекта {aspect_name}", 
+                self.rapport, 
+                self._get_aspect_values(),
+                abs(actual_change)
+            )
+            return True
+        
+        return False
+    
+    def to_dict(self) -> Dict[str, Any]:
         """
         Преобразует объект отношений в словарь для сериализации
         
         Returns:
-            dict: Словарь с данными отношений
+            Dict[str, Any]: Словарь с данными отношений
         """
         return {
             "character_name": self.character_name,
             "rapport": self.rapport,
-            "aspects": self.aspects,
+            "aspects": {name: aspect.to_dict() for name, aspect in self.aspects.items()},
             "personality_factors": self.personality_factors,
             "history": self.history,
             "created_at": self.created_at,
@@ -501,25 +596,33 @@ class Relationship:
         }
     
     @classmethod
-    def from_dict(cls, data):
+    def from_dict(cls, data: Dict[str, Any]) -> 'Relationship':
         """
         Создает объект отношений из словаря
         
         Args:
-            data (dict): Данные отношений
+            data (Dict[str, Any]): Данные отношений
             
         Returns:
             Relationship: Объект отношений
         """
         relationship = cls(
-            character_name=data["character_name"],
-            initial_rapport=data["rapport"],
-            initial_aspects=data["aspects"],
-            personality_factors=data["personality_factors"]
+            character_name=data.get("character_name", "Unknown"),
+            initial_rapport=data.get("rapport", 0.0),
+            personality_factors=data.get("personality_factors", {})
         )
         
-        relationship.history = data["history"]
-        relationship.created_at = data["created_at"]
-        relationship.last_updated = data["last_updated"]
+        # Загружаем аспекты
+        if "aspects" in data:
+            for name, aspect_data in data["aspects"].items():
+                if isinstance(aspect_data, dict):
+                    relationship.aspects[name] = RelationshipAspect.from_dict(aspect_data)
+                else:
+                    # Обратная совместимость со старым форматом
+                    relationship.aspects[name] = RelationshipAspect(name, aspect_data)
+        
+        relationship.history = data.get("history", [])
+        relationship.created_at = data.get("created_at", time.time())
+        relationship.last_updated = data.get("last_updated", time.time())
         
         return relationship

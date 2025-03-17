@@ -8,8 +8,13 @@
 import os
 import json
 import time
+import logging
+from typing import Dict, Any, Optional
+
 from agent import CharacterAgent
 from characters import list_characters, get_character
+
+logger = logging.getLogger(__name__)
 
 class SessionManager:
     """
@@ -30,18 +35,19 @@ class SessionManager:
         
         # Создаем директорию для сессий, если она не существует
         os.makedirs("character_states", exist_ok=True)
+        os.makedirs(os.path.dirname(config_path), exist_ok=True)
         
         # Загружаем активные сессии, если они есть
         self._load_active_sessions()
         
-        print(f"Инициализирован менеджер сессий. Загружено {len(self.active_sessions)} активных сессий.")
+        logger.info(f"Инициализирован менеджер сессий. Загружено {len(self.active_sessions)} активных сессий.")
     
-    def _load_config(self):
+    def _load_config(self) -> Dict[str, Any]:
         """
         Загружает конфигурацию бота
         
         Returns:
-            dict: Конфигурация
+            Dict[str, Any]: Конфигурация
         """
         config = {
             "default_character": "Шерлок Холмс",
@@ -55,9 +61,6 @@ class SessionManager:
         }
         
         try:
-            # Проверяем, существует ли директория конфигурации
-            os.makedirs(os.path.dirname(self.config_path), exist_ok=True)
-            
             # Проверяем, существует ли файл конфигурации
             if os.path.exists(self.config_path):
                 with open(self.config_path, 'r', encoding='utf-8') as f:
@@ -68,22 +71,27 @@ class SessionManager:
                 with open(self.config_path, 'w', encoding='utf-8') as f:
                     json.dump(config, f, ensure_ascii=False, indent=2)
         except Exception as e:
-            print(f"Ошибка при загрузке конфигурации: {str(e)}")
+            logger.error(f"Ошибка при загрузке конфигурации: {str(e)}")
         
         self.default_character = config["default_character"]
         return config
     
-    def _save_config(self):
+    def _save_config(self) -> bool:
         """
         Сохраняет конфигурацию бота
+        
+        Returns:
+            bool: True если успешно, False в противном случае
         """
         try:
             with open(self.config_path, 'w', encoding='utf-8') as f:
                 json.dump(self.config, f, ensure_ascii=False, indent=2)
+            return True
         except Exception as e:
-            print(f"Ошибка при сохранении конфигурации: {str(e)}")
+            logger.error(f"Ошибка при сохранении конфигурации: {str(e)}")
+            return False
     
-    def _load_active_sessions(self):
+    def _load_active_sessions(self) -> None:
         """
         Загружает информацию об активных сессиях из файла
         """
@@ -106,11 +114,14 @@ class SessionManager:
                             "last_active": last_active
                         }
         except Exception as e:
-            print(f"Ошибка при загрузке активных сессий: {str(e)}")
+            logger.error(f"Ошибка при загрузке активных сессий: {str(e)}")
     
-    def _save_active_sessions(self):
+    def _save_active_sessions(self) -> bool:
         """
         Сохраняет информацию об активных сессиях в файл
+        
+        Returns:
+            bool: True если успешно, False в противном случае
         """
         sessions_file = "config/active_sessions.json"
         try:
@@ -128,10 +139,12 @@ class SessionManager:
             # Сохраняем данные в файл
             with open(sessions_file, 'w', encoding='utf-8') as f:
                 json.dump(sessions_data, f, ensure_ascii=False, indent=2)
+            return True
         except Exception as e:
-            print(f"Ошибка при сохранении активных сессий: {str(e)}")
+            logger.error(f"Ошибка при сохранении активных сессий: {str(e)}")
+            return False
     
-    def get_agent_for_user(self, user_id, character_name=None):
+    def get_agent_for_user(self, user_id: str, character_name: Optional[str] = None) -> CharacterAgent:
         """
         Получает или создает агента для пользователя
         
@@ -151,7 +164,7 @@ class SessionManager:
         
         # Проверяем, существует ли персонаж
         if not get_character(character_name):
-            print(f"Персонаж '{character_name}' не найден. Используем '{self.default_character}'")
+            logger.warning(f"Персонаж '{character_name}' не найден. Используем '{self.default_character}'")
             character_name = self.default_character
         
         # Проверяем, есть ли сессия для этого пользователя
@@ -188,7 +201,7 @@ class SessionManager:
         
         return self.active_sessions[user_id]["agent"]
     
-    def _create_agent(self, character_name, user_id):
+    def _create_agent(self, character_name: str, user_id: str) -> CharacterAgent:
         """
         Создает нового агента
         
@@ -211,14 +224,14 @@ class SessionManager:
                 llm_model=self.config.get("default_llm_model", "gpt-4o-mini")
             )
         except Exception as e:
-            print(f"Ошибка при создании агента: {str(e)}")
+            logger.error(f"Ошибка при создании агента: {str(e)}")
             # Пытаемся создать агента с дефолтными параметрами в случае ошибки
             return CharacterAgent.load_or_create(
                 character_name=self.default_character,
                 user_id=user_id
             )
     
-    def process_message(self, user_id, message_text, character_name=None):
+    def process_message(self, user_id: str, message_text: str, character_name: Optional[str] = None) -> str:
         """
         Обрабатывает сообщение пользователя
         
@@ -241,7 +254,7 @@ class SessionManager:
         
         return response
     
-    def change_character(self, user_id, character_name):
+    def change_character(self, user_id: str, character_name: str) -> bool:
         """
         Меняет персонажа для пользователя
         
@@ -262,7 +275,7 @@ class SessionManager:
         
         return True
     
-    def save_all_sessions(self):
+    def save_all_sessions(self) -> None:
         """
         Сохраняет состояние всех активных сессий
         """
@@ -271,9 +284,9 @@ class SessionManager:
                 session["agent"].save_state()
         
         self._save_active_sessions()
-        print(f"Сохранены все активные сессии ({len(self.active_sessions)})")
+        logger.info(f"Сохранены все активные сессии ({len(self.active_sessions)})")
     
-    def _cleanup_sessions(self):
+    def _cleanup_sessions(self) -> None:
         """
         Очищает неактивные сессии и сохраняет остальные
         """

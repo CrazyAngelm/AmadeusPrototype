@@ -8,28 +8,135 @@
 import os
 import json
 import time
+import logging
 from abc import ABC, abstractmethod
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Union
+from functools import lru_cache
 from dotenv import load_dotenv
+
+# Настройка логирования
+logger = logging.getLogger(__name__)
 
 # Загружаем переменные окружения из .env файла
 load_dotenv()
 
-# Кэш LLM клиентов для повторного использования
-_LLM_CLIENT_CACHE = {}
+# Модели и их характеристики
+MODELS_INFO = {
+    "openai": {
+        "gpt-4.5": {
+            "description": "Самая продвинутая модель OpenAI с улучшенным эмоциональным интеллектом и сниженной склонностью к галлюцинациям",
+            "max_tokens": 128000,
+            "cost_per_1k_input": "$75.00",
+            "cost_per_1k_output": "$75.00"
+        },
+        "gpt-4o": {
+            "description": "Мультимодальная модель, способная обрабатывать и генерировать текст, изображения и аудио",
+            "max_tokens": 128000,
+            "cost_per_1k_input": "$5.00",
+            "cost_per_1k_output": "$15.00"
+        },
+        "gpt-4o-mini": {
+            "description": "Упрощенная и более быстрая версия GPT-4o, оптимизированная для быстрого выполнения задач",
+            "max_tokens": 4096,
+            "cost_per_1k_input": "$0.15",
+            "cost_per_1k_output": "$0.60"
+        },
+        "gpt-3.5-turbo": {
+            "description": "Быстрая и экономичная модель для повседневных задач",
+            "max_tokens": 4096,
+            "cost_per_1k_input": "$0.0005",
+            "cost_per_1k_output": "$0.0015"
+        },
+        "openai-o3-mini": {
+            "description": "Компактная модель с расширенными возможностями рассуждений, оптимизированная для задач в области математики, программирования и науки",
+            "max_tokens": 4096,
+            "cost_per_1k_input": "$0.10",
+            "cost_per_1k_output": "$0.40"
+        }
+    },
+    "anthropic": {
+        "claude-3.7-sonnet-20250224": {
+            "description": "Гибридная модель Claude, объединяющая быстрые ответы и глубокие рассуждения",
+            "max_tokens": 128000,
+            "cost_per_1k_input": "$3.00",
+            "cost_per_1k_output": "$15.00"
+        },
+        "claude-3.5-sonnet-20250210": {
+            "description": "Улучшенная версия Claude с повышенной производительностью, особенно в кодировании",
+            "max_tokens": 4096,
+            "cost_per_1k_input": "$3.00",
+            "cost_per_1k_output": "$15.00"
+        },
+        "claude-3-haiku-20240307": {
+            "description": "Самая быстрая и доступная модель Claude, оптимизированная для мгновенных ответов и повседневных задач",
+            "max_tokens": 32000,
+            "cost_per_1k_input": "$0.25",
+            "cost_per_1k_output": "$1.25"
+        }
+    },
+    "deepseek": {
+        "deepseek-chat": {
+            "description": "Модель с улучшенными возможностями рассуждений, превосходящая Llama 3.1 и Qwen 2.5, сопоставимая с GPT-4o и Claude 3.5 Sonnet",
+            "max_tokens": 128000,
+            "cost_per_1k_input": "$2.00",
+            "cost_per_1k_output": "$2.00"
+        },
+        "deepseek-r1": {
+            "description": "Модель, ориентированная на логическое мышление, математические рассуждения и решение задач в реальном времени, сопоставимая с OpenAI o1",
+            "max_tokens": 128000,
+            "cost_per_1k_input": "$1.50",
+            "cost_per_1k_output": "$1.50"
+        }
+    }
+}
+
 
 class LLMProvider(ABC):
     """
     Абстрактный класс, определяющий интерфейс для провайдеров LLM
     """
     
+    def __init__(self, model_name: str, api_key: Optional[str] = None):
+        """
+        Инициализация базового провайдера
+        
+        Args:
+            model_name (str): Название модели для использования
+            api_key (str, optional): API ключ. Если None, берется из переменных окружения
+        """
+        self.model_name = model_name
+        self.api_key = api_key
+        self._retry_settings = {
+            "max_retries": 3,
+            "initial_delay": 2,
+            "backoff_factor": 1.5
+        }
+    
     @abstractmethod
+    def _raw_generate(self, messages: List[Dict[str, str]], 
+                    temperature: float = 0.7, 
+                    max_tokens: int = 500,
+                    stop: Optional[List[str]] = None) -> str:
+        """
+        Непосредственное обращение к API провайдера LLM
+        
+        Args:
+            messages (List[Dict[str, str]]): Список сообщений
+            temperature (float): Температура генерации
+            max_tokens (int): Максимальное количество токенов
+            stop (List[str], optional): Стоп-последовательности
+            
+        Returns:
+            str: Сгенерированный текст
+        """
+        pass
+    
     def generate(self, messages: List[Dict[str, str]], 
                 temperature: float = 0.7, 
                 max_tokens: int = 500,
                 stop: Optional[List[str]] = None) -> str:
         """
-        Генерация ответа на основе сообщений
+        Генерация ответа на основе сообщений с повторными попытками
         
         Args:
             messages (List[Dict[str, str]]): Список сообщений в формате [{"role": "...", "content": "..."}]
@@ -40,7 +147,37 @@ class LLMProvider(ABC):
         Returns:
             str: Сгенерированный текст
         """
-        pass
+        max_retries = self._retry_settings["max_retries"]
+        retry_delay = self._retry_settings["initial_delay"]
+        
+        for attempt in range(max_retries):
+            try:
+                return self._raw_generate(
+                    messages=messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    stop=stop
+                )
+                
+            except Exception as e:
+                error_msg = str(e)
+                if "rate limit" in error_msg.lower():
+                    if attempt < max_retries - 1:
+                        logger.warning(f"Превышен лимит запросов к {self.provider_name}. "
+                                      f"Попытка {attempt+1}/{max_retries}, ожидание {retry_delay} сек...")
+                        time.sleep(retry_delay)
+                        retry_delay *= self._retry_settings["backoff_factor"]
+                    else:
+                        raise Exception(f"Превышен лимит запросов к {self.provider_name} после {max_retries} попыток. Попробуйте позже.")
+                else:
+                    # Другие ошибки
+                    if attempt < max_retries - 1:
+                        logger.warning(f"Ошибка API {self.provider_name}: {error_msg}. "
+                                      f"Попытка {attempt+1}/{max_retries}, ожидание {retry_delay} сек...")
+                        time.sleep(retry_delay)
+                        retry_delay *= self._retry_settings["backoff_factor"]
+                    else:
+                        raise Exception(f"Ошибка API {self.provider_name} после {max_retries} попыток: {error_msg}")
     
     @property
     @abstractmethod
@@ -51,14 +188,12 @@ class LLMProvider(ABC):
         pass
     
     @property
-    @abstractmethod
     def available_models(self) -> List[str]:
         """
-        Возвращает список доступных моделей
+        Возвращает список доступных моделей для данного провайдера
         """
-        pass
+        return list(MODELS_INFO.get(self.provider_name.lower(), {}).keys())
     
-    @abstractmethod
     def get_model_info(self, model_name: str) -> Dict[str, Any]:
         """
         Возвращает информацию о модели
@@ -69,7 +204,11 @@ class LLMProvider(ABC):
         Returns:
             Dict[str, Any]: Информация о модели
         """
-        pass
+        provider = self.provider_name.lower()
+        if provider in MODELS_INFO and model_name in MODELS_INFO[provider]:
+            return MODELS_INFO[provider][model_name]
+        return {"description": "Информация о модели недоступна"}
+
 
 class OpenAIProvider(LLMProvider):
     """
@@ -84,6 +223,8 @@ class OpenAIProvider(LLMProvider):
             model_name (str): Название модели для использования
             api_key (str, optional): API ключ. Если None, берется из переменной окружения OPENAI_API_KEY
         """
+        super().__init__(model_name, api_key)
+        
         try:
             from openai import OpenAI
         except ImportError:
@@ -91,99 +232,34 @@ class OpenAIProvider(LLMProvider):
                 "OpenAI Python пакет не установлен. Установите его с помощью 'pip install openai'"
             )
         
-        self.model_name = model_name
-        api_key = api_key or os.getenv("OPENAI_API_KEY")
+        self.api_key = api_key or os.getenv("OPENAI_API_KEY")
         
-        if not api_key:
+        if not self.api_key:
             raise ValueError(
                 "Не найден API ключ для OpenAI. Укажите его при создании провайдера или "
                 "установите переменную окружения OPENAI_API_KEY."
             )
         
-        self.client = OpenAI(api_key=api_key)
-        
-        # Словарь с информацией о моделях
-        self._models_info = {
-            "gpt-4.5": {
-                "description": "Самая продвинутая модель OpenAI с улучшенным эмоциональным интеллектом и сниженной склонностью к галлюцинациям",
-                "max_tokens": 128000,
-                "cost_per_1k_input": "$75.00",
-                "cost_per_1k_output": "$75.00"
-            },
-            "gpt-4o": {
-                "description": "Мультимодальная модель, способная обрабатывать и генерировать текст, изображения и аудио",
-                "max_tokens": 128000,
-                "cost_per_1k_input": "$5.00",
-                "cost_per_1k_output": "$15.00"
-            },
-            "gpt-4o-mini": {
-                "description": "Упрощенная и более быстрая версия GPT-4o, оптимизированная для быстрого выполнения задач",
-                "max_tokens": 4096,
-                "cost_per_1k_input": "$0.15",
-                "cost_per_1k_output": "$0.60"
-            },
-            "gpt-3.5-turbo": {
-                "description": "Быстрая и экономичная модель для повседневных задач",
-                "max_tokens": 4096,
-                "cost_per_1k_input": "$0.0005",
-                "cost_per_1k_output": "$0.0015"
-            },
-            "openai-o3-mini": {
-                "description": "Компактная модель с расширенными возможностями рассуждений, оптимизированная для задач в области математики, программирования и науки",
-                "max_tokens": 4096,
-                "cost_per_1k_input": "$0.10",
-                "cost_per_1k_output": "$0.40"
-            }
-        }
-
+        self.client = OpenAI(api_key=self.api_key)
     
-    def generate(self, messages, temperature=0.7, max_tokens=500, stop=None):
+    def _raw_generate(self, messages, temperature=0.7, max_tokens=500, stop=None):
         """
-        Генерация ответа с использованием API OpenAI с повторными попытками
+        Непосредственное обращение к API OpenAI
         """
-        max_retries = 3
-        retry_delay = 2  # начальная задержка в секундах
+        response = self.client.chat.completions.create(
+            model=self.model_name,
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            stop=stop
+        )
         
-        for attempt in range(max_retries):
-            try:
-                response = self.client.chat.completions.create(
-                    model=self.model_name,
-                    messages=messages,
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                    stop=stop
-                )
-                
-                return response.choices[0].message.content
-                
-            except Exception as e:
-                error_msg = str(e)
-                if "rate limit" in error_msg.lower():
-                    if attempt < max_retries - 1:
-                        print(f"Превышен лимит запросов к OpenAI. Попытка {attempt+1}/{max_retries}, ожидание {retry_delay} сек...")
-                        time.sleep(retry_delay)
-                        retry_delay *= 2  # Экспоненциальное увеличение задержки
-                    else:
-                        raise Exception(f"Превышен лимит запросов к OpenAI после {max_retries} попыток. Попробуйте позже.")
-                else:
-                    # Другие ошибки
-                    if attempt < max_retries - 1:
-                        print(f"Ошибка API OpenAI: {error_msg}. Попытка {attempt+1}/{max_retries}, ожидание {retry_delay} сек...")
-                        time.sleep(retry_delay)
-                        retry_delay *= 1.5
-                    else:
-                        raise Exception(f"Ошибка API OpenAI после {max_retries} попыток: {error_msg}")
+        return response.choices[0].message.content
     
     @property
     def provider_name(self):
         return "OpenAI"
-    
-    @property
-    def available_models(self):
-        return list(self._models_info.keys())
-    
-    def get_model_info(self, model_name):
-        return self._models_info.get(model_name, {"description": "Информация о модели недоступна"})
+
 
 class AnthropicProvider(LLMProvider):
     """
@@ -198,6 +274,8 @@ class AnthropicProvider(LLMProvider):
             model_name (str): Название модели для использования
             api_key (str, optional): API ключ. Если None, берется из переменной окружения ANTHROPIC_API_KEY
         """
+        super().__init__(model_name, api_key)
+        
         try:
             from anthropic import Anthropic
         except ImportError:
@@ -205,101 +283,48 @@ class AnthropicProvider(LLMProvider):
                 "Anthropic Python пакет не установлен. Установите его с помощью 'pip install anthropic'"
             )
         
-        self.model_name = model_name
-        api_key = api_key or os.getenv("ANTHROPIC_API_KEY")
+        self.api_key = api_key or os.getenv("ANTHROPIC_API_KEY")
         
-        if not api_key:
+        if not self.api_key:
             raise ValueError(
                 "Не найден API ключ для Anthropic. Укажите его при создании провайдера или "
                 "установите переменную окружения ANTHROPIC_API_KEY."
             )
         
-        self.client = Anthropic(api_key=api_key)
-        
-        # Словарь с информацией о моделях
-        self._models_info = {
-            "claude-3.7-sonnet-20250224": {
-            "description": "Гибридная модель Claude, объединяющая быстрые ответы и глубокие рассуждения",
-            "max_tokens": 128000,
-            "cost_per_1k_input": "$3.00",
-            "cost_per_1k_output": "$15.00"
-        },
-            "claude-3.5-sonnet-20250210": {
-            "description": "Улучшенная версия Claude с повышенной производительностью, особенно в кодировании",
-            "max_tokens": 4096,
-            "cost_per_1k_input": "$3.00",
-            "cost_per_1k_output": "$15.00"
-        },
-            "claude-3-haiku-20240307": {
-            "description": "Самая быстрая и доступная модель Claude, оптимизированная для мгновенных ответов и повседневных задач",
-            "max_tokens": 32000,
-            "cost_per_1k_input": "$0.25",
-            "cost_per_1k_output": "$1.25"
-        }
-}
-
+        self.client = Anthropic(api_key=self.api_key)
     
-    def generate(self, messages, temperature=0.7, max_tokens=500, stop=None):
+    def _raw_generate(self, messages, temperature=0.7, max_tokens=500, stop=None):
         """
-        Генерация ответа с использованием API Anthropic с повторными попытками
+        Непосредственное обращение к API Anthropic
         """
-        max_retries = 3
-        retry_delay = 2  # начальная задержка в секундах
+        # Преобразуем формат сообщений из OpenAI в формат Anthropic
+        system_message = None
+        anthropic_messages = []
         
-        for attempt in range(max_retries):
-            try:
-                # Преобразуем формат сообщений из OpenAI в формат Anthropic
-                system_message = None
-                anthropic_messages = []
-                
-                for message in messages:
-                    if message["role"] == "system":
-                        system_message = message["content"]
-                    else:
-                        anthropic_messages.append({
-                            "role": message["role"],
-                            "content": message["content"]
-                        })
-                
-                response = self.client.messages.create(
-                    model=self.model_name,
-                    system=system_message,
-                    messages=anthropic_messages,
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                    stop_sequences=stop
-                )
-                
-                return response.content[0].text
-                
-            except Exception as e:
-                error_msg = str(e)
-                if "rate limit" in error_msg.lower():
-                    if attempt < max_retries - 1:
-                        print(f"Превышен лимит запросов к Anthropic. Попытка {attempt+1}/{max_retries}, ожидание {retry_delay} сек...")
-                        time.sleep(retry_delay)
-                        retry_delay *= 2  # Экспоненциальное увеличение задержки
-                    else:
-                        raise Exception(f"Превышен лимит запросов к Anthropic после {max_retries} попыток. Попробуйте позже.")
-                else:
-                    # Другие ошибки
-                    if attempt < max_retries - 1:
-                        print(f"Ошибка API Anthropic: {error_msg}. Попытка {attempt+1}/{max_retries}, ожидание {retry_delay} сек...")
-                        time.sleep(retry_delay)
-                        retry_delay *= 1.5
-                    else:
-                        raise Exception(f"Ошибка API Anthropic после {max_retries} попыток: {error_msg}")
+        for message in messages:
+            if message["role"] == "system":
+                system_message = message["content"]
+            else:
+                anthropic_messages.append({
+                    "role": message["role"],
+                    "content": message["content"]
+                })
+        
+        response = self.client.messages.create(
+            model=self.model_name,
+            system=system_message,
+            messages=anthropic_messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            stop_sequences=stop
+        )
+        
+        return response.content[0].text
     
     @property
     def provider_name(self):
         return "Anthropic"
-    
-    @property
-    def available_models(self):
-        return list(self._models_info.keys())
-    
-    def get_model_info(self, model_name):
-        return self._models_info.get(model_name, {"description": "Информация о модели недоступна"})
+
 
 class DeepSeekProvider(LLMProvider):
     """
@@ -314,6 +339,8 @@ class DeepSeekProvider(LLMProvider):
             model_name (str): Название модели для использования
             api_key (str, optional): API ключ. Если None, берется из переменной окружения DEEPSEEK_API_KEY
         """
+        super().__init__(model_name, api_key)
+        
         try:
             import requests
         except ImportError:
@@ -321,7 +348,6 @@ class DeepSeekProvider(LLMProvider):
                 "Requests пакет не установлен. Установите его с помощью 'pip install requests'"
             )
         
-        self.model_name = model_name
         self.api_key = api_key or os.getenv("DEEPSEEK_API_KEY")
         
         if not self.api_key:
@@ -331,32 +357,12 @@ class DeepSeekProvider(LLMProvider):
             )
         
         self.api_base = "https://api.deepseek.com/v1"
-        
-        # Словарь с информацией о моделях
-        self._models_info = {
-        "deepseek-chat": {
-            "description": "Модель с улучшенными возможностями рассуждений, превосходящая Llama 3.1 и Qwen 2.5, сопоставимая с GPT-4o и Claude 3.5 Sonnet",
-            "max_tokens": 128000,
-            "cost_per_1k_input": "$2.00",
-            "cost_per_1k_output": "$2.00"
-        },
-        "deepseek-r1": {
-            "description": "Модель, ориентированная на логическое мышление, математические рассуждения и решение задач в реальном времени, сопоставимая с OpenAI o1",
-            "max_tokens": 128000,
-            "cost_per_1k_input": "$1.50",
-            "cost_per_1k_output": "$1.50"
-        }
-    }
-
     
-    def generate(self, messages, temperature=0.7, max_tokens=500, stop=None):
+    def _raw_generate(self, messages, temperature=0.7, max_tokens=500, stop=None):
         """
-        Генерация ответа с использованием API DeepSeek с повторными попытками
+        Непосредственное обращение к API DeepSeek
         """
         import requests
-        
-        max_retries = 3
-        retry_delay = 2  # начальная задержка в секундах
         
         headers = {
             "Content-Type": "application/json",
@@ -373,49 +379,27 @@ class DeepSeekProvider(LLMProvider):
         if stop:
             data["stop"] = stop
         
-        for attempt in range(max_retries):
-            try:
-                response = requests.post(
-                    f"{self.api_base}/chat/completions",
-                    headers=headers,
-                    json=data,
-                    timeout=30  # Добавляем таймаут для запроса
-                )
-                
-                if response.status_code != 200:
-                    error_msg = f"HTTP ошибка: {response.status_code} - {response.text}"
-                    if response.status_code in [429, 500, 502, 503, 504]:  # Повторяемые ошибки
-                        if attempt < max_retries - 1:
-                            print(f"{error_msg}. Попытка {attempt+1}/{max_retries}, ожидание {retry_delay} сек...")
-                            time.sleep(retry_delay)
-                            retry_delay *= 2
-                            continue
-                    raise Exception(error_msg)
-                
-                return response.json()["choices"][0]["message"]["content"]
-                
-            except requests.RequestException as e:
-                if attempt < max_retries - 1:
-                    print(f"Ошибка соединения с DeepSeek API: {str(e)}. Попытка {attempt+1}/{max_retries}, ожидание {retry_delay} сек...")
-                    time.sleep(retry_delay)
-                    retry_delay *= 1.5
-                else:
-                    raise Exception(f"Не удалось соединиться с DeepSeek API после {max_retries} попыток: {str(e)}")
+        response = requests.post(
+            f"{self.api_base}/chat/completions",
+            headers=headers,
+            json=data,
+            timeout=30
+        )
+        
+        if response.status_code != 200:
+            raise Exception(f"HTTP ошибка: {response.status_code} - {response.text}")
+        
+        return response.json()["choices"][0]["message"]["content"]
     
     @property
     def provider_name(self):
         return "DeepSeek"
-    
-    @property
-    def available_models(self):
-        return list(self._models_info.keys())
-    
-    def get_model_info(self, model_name):
-        return self._models_info.get(model_name, {"description": "Информация о модели недоступна"})
 
+
+@lru_cache(maxsize=32)
 def get_provider(provider_name, model_name=None, api_key=None):
     """
-    Создает и возвращает провайдера LLM по имени
+    Создает и возвращает провайдера LLM по имени с использованием кэширования
     
     Args:
         provider_name (str): Название провайдера ("openai", "anthropic", "deepseek")
@@ -436,14 +420,6 @@ def get_provider(provider_name, model_name=None, api_key=None):
         elif provider_name == "deepseek":
             model_name = "deepseek-chat"
     
-    # Формируем ключ кэша
-    cache_key = f"{provider_name}:{model_name}:{api_key}"
-    
-    # Проверяем, есть ли уже готовый клиент в кэше
-    if cache_key in _LLM_CLIENT_CACHE:
-        print(f"Используем кэшированного клиента {provider_name}/{model_name}")
-        return _LLM_CLIENT_CACHE[cache_key]
-    
     # Если клиента нет в кэше, создаем нового
     try:
         if provider_name == "openai":
@@ -455,21 +431,19 @@ def get_provider(provider_name, model_name=None, api_key=None):
         else:
             raise ValueError(f"Неизвестный провайдер: {provider_name}")
         
-        # Сохраняем в кэш
-        _LLM_CLIENT_CACHE[cache_key] = provider
-        print(f"Создан новый клиент {provider_name}/{model_name} и добавлен в кэш")
-        
+        logger.info(f"Создан новый клиент {provider_name}/{model_name}")
         return provider
     except Exception as e:
         error_msg = f"Не удалось инициализировать провайдер {provider_name}: {str(e)}"
-        print(error_msg)
+        logger.error(error_msg)
         
         # В случае ошибки пытаемся использовать OpenAI как запасной вариант
         if provider_name != "openai":
-            print(f"Пытаемся использовать OpenAI в качестве запасного варианта...")
+            logger.warning(f"Пытаемся использовать OpenAI в качестве запасного варианта...")
             return get_provider("openai", None, None)
         else:
             raise ValueError(error_msg)
+
 
 def list_available_providers():
     """
@@ -478,41 +452,21 @@ def list_available_providers():
     Returns:
         Dict: Информация о провайдерах и моделях
     """
-    providers = {
-        "openai": {
-            "description": "Провайдер для моделей OpenAI",
-            "models": [
-                "gpt-4.5",
-                "gpt-4o",
-                "gpt-4o-mini",
-                "gpt-3.5-turbo",
-                "openai-o3-mini"
-            ]
-        },
-        "anthropic": {
-            "description": "Провайдер для моделей Anthropic Claude",
-            "models": [
-                "claude-3.7-sonnet-20250224",
-                "claude-3.5-sonnet-20250210",
-                "claude-3-haiku-20240307"
-            ]
-        },
-        "deepseek": {
-            "description": "Провайдер для моделей DeepSeek",
-            "models": [
-                "deepseek-chat",
-                "deepseek-r1"
-            ]
+    providers = {}
+    
+    for provider_name, models in MODELS_INFO.items():
+        providers[provider_name] = {
+            "description": f"Провайдер для моделей {provider_name.capitalize()}",
+            "models": list(models.keys())
         }
-    }
-
     
     return providers
+
 
 def clear_provider_cache():
     """
     Очищает кэш LLM провайдеров
     """
-    global _LLM_CLIENT_CACHE
-    _LLM_CLIENT_CACHE = {}
-    print("Кэш LLM провайдеров очищен")
+    # Получаем доступ к внутреннему кэшу декоратора lru_cache
+    get_provider.cache_clear()
+    logger.info("Кэш LLM провайдеров очищен")

@@ -587,30 +587,9 @@ class CharacterAgent:
         return self.memory.update_episodic_memory_importance(memory_index, new_importance)
     
     def get_episodic_memories(self, sort_by="importance"):
-        """
-        Возвращает все эпизодические воспоминания
-        
-        Args:
-            sort_by (str): Способ сортировки ("importance", "recency", "access_count")
-            
-        Returns:
-            list: Список эпизодических воспоминаний
-        """
         if not hasattr(self.memory, 'episodic_memory'):
             return []
-        
-        # Копируем список, чтобы не изменять оригинал
-        memories = self.memory.episodic_memory.copy()
-        
-        # Сортируем по заданному критерию
-        if sort_by == "importance":
-            memories.sort(key=lambda x: x["importance"], reverse=True)
-        elif sort_by == "recency":
-            memories.sort(key=lambda x: x["unix_time"], reverse=True)
-        elif sort_by == "access_count":
-            memories.sort(key=lambda x: x["access_count"], reverse=True)
-        
-        return memories
+        return self.memory.episodic_memory.sort(sort_by=sort_by)
     
     def get_relationship_status(self):
         """

@@ -29,19 +29,22 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Состояния для конечного автомата ConversationHandler
-ADDING_MEMORY = 2
-SETTING_IMPORTANCE = 3
-SELECTING_RELATIONSHIP = 4
-CHANGING_RELATIONSHIP = 5
-
 # Инициализация менеджера сессий
 session_manager = SessionManager()
 
 # Получаем токен бота из переменных окружения
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 if not TOKEN:
+    logger.error("Не найден токен Telegram бота. Установите переменную окружения TELEGRAM_BOT_TOKEN.")
     raise ValueError("Не найден токен Telegram бота. Пожалуйста, установите переменную окружения TELEGRAM_BOT_TOKEN.")
+
+def format_timestamp(timestamp_str):
+    """Преобразует ISO timestamp в читаемый формат"""
+    try:
+        dt = datetime.fromisoformat(timestamp_str)
+        return dt.strftime("%d.%m.%Y %H:%M")
+    except:
+        return timestamp_str
 
 # Обработчики команд
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -74,13 +77,17 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "/characters - Показать список доступных персонажей\n"
         "/model [провайдер] [модель] - Выбрать провайдера и модель LLM\n"
         "/relationship - Посмотреть текущие отношения персонажа к вам\n"
-        "/memories - Управление эпизодической памятью персонажа\n"
-        "/clear_memory - Очистить эпизодическую память\n"
+        "/relation_change [аспект] [изменение] - Изменить отношение персонажа\n"
+        "  Аспекты: rapport, respect, trust, liking, patience\n"
+        "  Изменение: число от -0.3 до 0.3\n"
+        "  Пример: /relation_change respect 0.1\n"
+        "/memories - Показать список эпизодических воспоминаний\n"
+        "/memory_add [текст] [важность] - Добавить воспоминание\n"
+        "  Важность: число от 0.1 до 0.9\n"
+        "  Пример: /memory_add 'Мы говорили о музыке' 0.5\n"
+        "/memory_clear - Очистить эпизодическую память\n"
         "/save - Сохранить текущее состояние\n"
         "/providers - Показать доступные LLM провайдеры\n\n"
-        "Примеры использования:\n"
-        "/character Шерлок Холмс - переключиться на персонажа Шерлока Холмса\n"
-        "/model openai gpt-4o-mini - переключиться на модель OpenAI GPT-4o-mini\n\n"
         "Просто отправьте сообщение, чтобы пообщаться с текущим персонажем."
     )
     
@@ -212,6 +219,7 @@ async def model_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 f"Ошибка при смене модели. Проверьте название модели и повторите попытку."
             )
     except Exception as e:
+        logger.error(f"Ошибка при смене модели: {str(e)}")
         await update.message.reply_text(f"Ошибка при смене модели: {str(e)}")
 
 async def show_relationship(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -250,313 +258,214 @@ async def show_relationship(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         reason = last_change.get('reason')
         relationship_text += f"\nПоследнее изменение:\n{reason}\n"
     
-    # Создаем клавиатуру для изменения отношений
-    keyboard = [[InlineKeyboardButton("Изменить отношения", callback_data="modify_relationship")]]
-    reply_markup = InlineKeyboardMarkup(keyboard)
+    # Добавляем инструкцию по изменению отношений
+    relationship_text += "\nДля изменения отношений используйте команду:\n"
+    relationship_text += "/relation_change [аспект] [изменение]\n"
+    relationship_text += "Например: /relation_change trust 0.2"
     
-    await update.message.reply_text(
-        relationship_text,
-        reply_markup=reply_markup
-    )
+    await update.message.reply_text(relationship_text)
 
-async def modify_relationship_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Начало процесса изменения отношений"""
-    query = update.callback_query
-    await query.answer()
+async def relation_change_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Обработчик команды /relation_change [аспект] [изменение]"""
+    user_id = str(update.effective_user.id)
+    args = context.args
     
-    # Создаем клавиатуру для выбора аспекта отношений
-    keyboard = [
-        [InlineKeyboardButton("Общее отношение", callback_data="relationship_rapport")],
-        [InlineKeyboardButton("Уважение", callback_data="relationship_respect")],
-        [InlineKeyboardButton("Доверие", callback_data="relationship_trust")],
-        [InlineKeyboardButton("Симпатия", callback_data="relationship_liking")],
-        [InlineKeyboardButton("Терпение", callback_data="relationship_patience")],
-        [InlineKeyboardButton("Отмена", callback_data="relationship_cancel")]
-    ]
+    # Проверяем аргументы
+    if not args or len(args) < 2:
+        await update.message.reply_text(
+            "Использование: /relation_change [аспект] [изменение]\n"
+            "Доступные аспекты: rapport, respect, trust, liking, patience\n"
+            "Изменение: число от -0.3 до 0.3\n"
+            "Например: /relation_change trust 0.2"
+        )
+        return
     
-    reply_markup = InlineKeyboardMarkup(keyboard)
+    aspect = args[0].lower()
     
-    await query.edit_message_text(
-        "Выберите аспект отношений для изменения:",
-        reply_markup=reply_markup
-    )
+    # Проверяем корректность аспекта
+    valid_aspects = ["rapport", "respect", "trust", "liking", "patience"]
+    if aspect not in valid_aspects:
+        await update.message.reply_text(
+            f"Ошибка: неизвестный аспект '{aspect}'.\n"
+            f"Доступные аспекты: {', '.join(valid_aspects)}"
+        )
+        return
     
-    return SELECTING_RELATIONSHIP
-
-async def relationship_aspect_selected(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Обработчик выбора аспекта отношений"""
-    query = update.callback_query
-    await query.answer()
-    
-    callback_data = query.data
-    
-    if callback_data == "relationship_cancel":
-        await query.edit_message_text("Изменение отношений отменено.")
-        return ConversationHandler.END
-    
-    # Извлекаем аспект из callback_data
-    aspect = callback_data.replace("relationship_", "")
-    context.user_data['selected_aspect'] = aspect
-    
-    # Создаем клавиатуру для выбора направления изменения
-    keyboard = [
-        [InlineKeyboardButton("Сильно улучшить (+0.3)", callback_data="change_0.3")],
-        [InlineKeyboardButton("Улучшить (+0.1)", callback_data="change_0.1")],
-        [InlineKeyboardButton("Немного улучшить (+0.05)", callback_data="change_0.05")],
-        [InlineKeyboardButton("Немного ухудшить (-0.05)", callback_data="change_-0.05")],
-        [InlineKeyboardButton("Ухудшить (-0.1)", callback_data="change_-0.1")],
-        [InlineKeyboardButton("Сильно ухудшить (-0.3)", callback_data="change_-0.3")],
-        [InlineKeyboardButton("Отмена", callback_data="change_cancel")]
-    ]
-    
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    aspect_names = {
-        "rapport": "общее отношение",
-        "respect": "уважение",
-        "trust": "доверие",
-        "liking": "симпатия",
-        "patience": "терпение"
-    }
-    
-    aspect_name = aspect_names.get(aspect, aspect)
-    
-    await query.edit_message_text(
-        f"Выберите, как изменить {aspect_name}:",
-        reply_markup=reply_markup
-    )
-    
-    return CHANGING_RELATIONSHIP
-
-async def change_relationship(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Обработчик изменения отношений"""
-    query = update.callback_query
-    await query.answer()
-    
-    user_id = str(query.from_user.id)
-    callback_data = query.data
-    
-    if callback_data == "change_cancel":
-        await query.edit_message_text("Изменение отношений отменено.")
-        return ConversationHandler.END
-    
-    # Извлекаем величину изменения из callback_data
-    change = float(callback_data.replace("change_", ""))
-    aspect = context.user_data.get('selected_aspect')
-    
-    if not aspect:
-        await query.edit_message_text("Ошибка: не выбран аспект отношений.")
-        return ConversationHandler.END
+    # Проверяем корректность изменения
+    try:
+        change = float(args[1])
+        if change < -0.3 or change > 0.3:
+            await update.message.reply_text(
+                "Изменение должно быть в диапазоне от -0.3 до 0.3"
+            )
+            return
+    except ValueError:
+        await update.message.reply_text(
+            "Ошибка: изменение должно быть числом (например, 0.1 или -0.2)"
+        )
+        return
     
     # Получаем агента и обновляем отношения
     agent = session_manager.get_agent_for_user(user_id)
-    success = agent.update_relationship_manually(aspect, change)
     
-    aspect_names = {
-        "rapport": "Общее отношение",
-        "respect": "Уважение",
-        "trust": "Доверие",
-        "liking": "Симпатия",
-        "patience": "Терпение"
-    }
-    
-    aspect_name = aspect_names.get(aspect, aspect)
-    
-    if success:
-        # Получаем обновленный статус отношений
-        status = agent.get_relationship_status()
-        new_value = status['rapport_value'] if aspect == 'rapport' else status['aspect_values'].get(aspect, 0)
+    try:
+        success = agent.update_relationship_manually(aspect, change)
         
-        direction = "улучшено" if change > 0 else "ухудшено"
-        await query.edit_message_text(
-            f"{aspect_name} {direction} на {abs(change):.2f}. Новое значение: {new_value:.2f}"
-        )
+        aspect_names = {
+            "rapport": "Общее отношение",
+            "respect": "Уважение",
+            "trust": "Доверие",
+            "liking": "Симпатия",
+            "patience": "Терпение"
+        }
         
-        # Добавляем эпизодическое воспоминание об изменении отношений
-        memory_text = f"[Ручное изменение отношения]: {aspect_name} было {direction} на {abs(change):.2f}"
-        agent.add_episodic_memory(memory_text, importance=0.7, category="отношения")
-    else:
-        await query.edit_message_text(f"Ошибка при изменении отношений.")
-    
-    return ConversationHandler.END
+        aspect_name = aspect_names.get(aspect, aspect)
+        
+        if success:
+            # Получаем обновленный статус отношений
+            status = agent.get_relationship_status()
+            new_value = status['rapport_value'] if aspect == 'rapport' else status['aspect_values'].get(aspect, 0)
+            
+            direction = "улучшено" if change > 0 else "ухудшено"
+            await update.message.reply_text(
+                f"{aspect_name} {direction} на {abs(change):.2f}. Новое значение: {new_value:.2f}"
+            )
+            
+            # Добавляем эпизодическое воспоминание об изменении отношений
+            memory_text = f"[Ручное изменение отношения]: {aspect_name} было {direction} на {abs(change):.2f}"
+            agent.add_episodic_memory(memory_text, importance=0.7, category="отношения")
+        else:
+            await update.message.reply_text(f"Ошибка при изменении отношений.")
+    except Exception as e:
+        logger.error(f"Ошибка при изменении отношений: {str(e)}")
+        await update.message.reply_text(f"Произошла ошибка: {str(e)}")
 
 async def memories_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Обработчик команды /memories"""
+    """Обработчик команды /memories - показывает список эпизодических воспоминаний"""
     user_id = str(update.effective_user.id)
     
-    # Получаем агента и эпизодические воспоминания
-    agent = session_manager.get_agent_for_user(user_id)
-    memories = agent.get_episodic_memories(sort_by="importance")
-    
-    if not memories:
-        # Создаем клавиатуру для добавления воспоминания
-        keyboard = [[InlineKeyboardButton("Добавить воспоминание", callback_data="add_memory")]]
-        reply_markup = InlineKeyboardMarkup(keyboard)
+    try:
+        # Получаем агента 
+        agent = session_manager.get_agent_for_user(user_id)
         
+        # Получаем список воспоминаний через доступный метод
+        memories = agent.get_episodic_memories(sort_by="importance")
+        
+        if not memories:
+            await update.message.reply_text(
+                "У персонажа пока нет эпизодических воспоминаний.\n\n"
+                "Чтобы добавить воспоминание, используйте команду:\n"
+                "/memory_add [текст] [важность]\n"
+                "Например: /memory_add 'Мы говорили о музыке' 0.7"
+            )
+            return
+        
+        # Форматируем список воспоминаний
+        memory_text = f"Эпизодические воспоминания {agent.character_name}\n\n"
+        
+        # Показываем только первые 10 воспоминаний
+        show_count = min(10, len(memories))
+        for i, memory in enumerate(memories[:show_count]):
+            # Форматируем текст воспоминания (сокращаем, если слишком длинный)
+            text = memory["text"]
+            if len(text) > 100:
+                text = text[:97] + "..."
+            
+            # Форматируем временную метку
+            timestamp = memory.get("timestamp", "")
+            if timestamp:
+                timestamp = format_timestamp(timestamp)
+            
+            importance = memory.get("importance", 0)
+            category = memory.get("category", "без категории")
+            
+            memory_text += f"{i+1}. [{timestamp}] {text}\n"
+            memory_text += f"   Важность: {importance:.2f}, Категория: {category}\n\n"
+        
+        if len(memories) > show_count:
+            memory_text += f"(показано {show_count} из {len(memories)} воспоминаний)\n"
+        
+        # Добавляем инструкции по управлению памятью
+        memory_text += "\nКоманды для управления памятью:\n"
+        memory_text += "/memory_add [текст] [важность] - Добавить воспоминание\n"
+        memory_text += "/memory_clear - Очистить всю эпизодическую память"
+        
+        await update.message.reply_text(memory_text)
+    
+    except Exception as e:
+        logger.error(f"Ошибка при выполнении команды memories: {str(e)}")
+        await update.message.reply_text(f"Произошла ошибка при получении воспоминаний: {str(e)}")
+
+async def memory_add_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Обработчик команды /memory_add [текст] [важность]"""
+    user_id = str(update.effective_user.id)
+    args = context.args
+    
+    # Проверяем наличие аргументов
+    if not args:
         await update.message.reply_text(
-            "У персонажа пока нет эпизодических воспоминаний.",
-            reply_markup=reply_markup
+            "Использование: /memory_add [текст] [важность]\n"
+            "Например: /memory_add 'Мы говорили о философии' 0.7\n\n"
+            "Важность должна быть числом от 0.1 до 0.9"
         )
         return
     
-    # Форматируем список воспоминаний
-    memory_text = f"Эпизодические воспоминания {agent.character_name}\n\n"
-    
-    # Показываем только первые 10 воспоминаний
-    show_count = min(10, len(memories))
-    for i, memory in enumerate(memories[:show_count]):
-        # Форматируем текст воспоминания (сокращаем, если слишком длинный)
-        text = memory["text"]
-        if len(text) > 100:
-            text = text[:97] + "..."
+    # Пытаемся извлечь важность из последнего аргумента
+    try:
+        importance = float(args[-1])
+        if importance < 0.1 or importance > 0.9:
+            raise ValueError("Важность должна быть от 0.1 до 0.9")
         
-        # Форматируем временную метку
-        timestamp = memory.get("timestamp", "")
-        if timestamp:
-            try:
-                dt = datetime.fromisoformat(timestamp)
-                timestamp = dt.strftime("%d.%m.%Y %H:%M")
-            except:
-                pass
+        # Извлекаем текст воспоминания (все аргументы кроме последнего)
+        memory_text = " ".join(args[:-1])
         
-        importance = memory.get("importance", 0)
-        category = memory.get("category", "без категории")
-        
-        memory_text += f"{i+1}. [{timestamp}] {text}\n"
-        memory_text += f"   Важность: {importance:.2f}, Категория: {category}\n\n"
-    
-    if len(memories) > show_count:
-        memory_text += f"(показано {show_count} из {len(memories)} воспоминаний)\n"
-    
-    # Создаем клавиатуру для действий с воспоминаниями
-    keyboard = [
-        [InlineKeyboardButton("Добавить воспоминание", callback_data="add_memory")],
-        [InlineKeyboardButton("Очистить память", callback_data="clear_memory")]
-    ]
-    
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    await update.message.reply_text(
-        memory_text,
-        reply_markup=reply_markup
-    )
-
-async def start_add_memory(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Начало процесса добавления воспоминания"""
-    query = update.callback_query
-    await query.answer()
-    
-    await query.edit_message_text(
-        "Отправьте текст воспоминания, которое нужно добавить персонажу:"
-    )
-    
-    return ADDING_MEMORY
-
-async def memory_text_received(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Обработчик получения текста воспоминания"""
-    memory_text = update.message.text
-    context.user_data['memory_text'] = memory_text
-    
-    # Создаем клавиатуру для выбора важности
-    keyboard = [
-        [InlineKeyboardButton("Очень важное (0.9)", callback_data="importance_0.9")],
-        [InlineKeyboardButton("Важное (0.7)", callback_data="importance_0.7")],
-        [InlineKeyboardButton("Среднее (0.5)", callback_data="importance_0.5")],
-        [InlineKeyboardButton("Маловажное (0.3)", callback_data="importance_0.3")],
-        [InlineKeyboardButton("Отмена", callback_data="importance_cancel")]
-    ]
-    
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    await update.message.reply_text(
-        "Выберите важность воспоминания:",
-        reply_markup=reply_markup
-    )
-    
-    return SETTING_IMPORTANCE
-
-async def memory_importance_selected(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Обработчик выбора важности воспоминания"""
-    query = update.callback_query
-    await query.answer()
-    
-    user_id = str(query.from_user.id)
-    callback_data = query.data
-    
-    if callback_data == "importance_cancel":
-        await query.edit_message_text("Добавление воспоминания отменено.")
-        return ConversationHandler.END
-    
-    # Извлекаем важность из callback_data
-    importance = float(callback_data.replace("importance_", ""))
-    memory_text = context.user_data.get('memory_text', "")
-    
-    if not memory_text:
-        await query.edit_message_text("Ошибка: текст воспоминания не найден.")
-        return ConversationHandler.END
+        # Если текст пустой, используем все аргументы и важность по умолчанию
+        if not memory_text:
+            memory_text = " ".join(args)
+            importance = 0.5
+    except ValueError:
+        # Если последний аргумент не число, используем все аргументы как текст
+        memory_text = " ".join(args)
+        importance = 0.5
     
     # Получаем агента и добавляем воспоминание
     agent = session_manager.get_agent_for_user(user_id)
-    agent.add_episodic_memory(memory_text, importance=importance)
-    
-    await query.edit_message_text(
-        f"Воспоминание успешно добавлено персонажу {agent.character_name} с важностью {importance:.1f}."
-    )
-    
-    return ConversationHandler.END
+    try:
+        idx = agent.add_episodic_memory(memory_text, importance=importance)
+        
+        await update.message.reply_text(
+            f"Воспоминание успешно добавлено персонажу {agent.character_name} с важностью {importance:.1f}."
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при добавлении воспоминания: {str(e)}")
+        await update.message.reply_text(f"Произошла ошибка при добавлении воспоминания: {str(e)}")
 
-async def clear_memory_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Обработчик команды /clear_memory - запрос на очистку памяти"""
-    # Создаем клавиатуру для подтверждения
-    keyboard = [
-        [InlineKeyboardButton("Да, очистить", callback_data="clear_memory_confirmed")],
-        [InlineKeyboardButton("Отмена", callback_data="clear_memory_cancel")]
-    ]
+async def memory_clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Обработчик команды /memory_clear"""
+    user_id = str(update.effective_user.id)
     
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
+    # Запрашиваем подтверждение
     await update.message.reply_text(
-        "Вы уверены, что хотите очистить всю эпизодическую память персонажа? Это действие нельзя отменить.",
-        reply_markup=reply_markup
+        "Вы уверены, что хотите очистить всю эпизодическую память персонажа?\n"
+        "Это действие нельзя отменить.\n\n"
+        "Для подтверждения отправьте /memory_clear_confirm"
     )
 
-async def clear_memory_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Запрос подтверждения очистки памяти"""
-    query = update.callback_query
-    await query.answer()
-    
-    # Создаем клавиатуру для подтверждения
-    keyboard = [
-        [InlineKeyboardButton("Да, очистить", callback_data="clear_memory_confirmed")],
-        [InlineKeyboardButton("Отмена", callback_data="clear_memory_cancel")]
-    ]
-    
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    await query.edit_message_text(
-        "Вы уверены, что хотите очистить всю эпизодическую память персонажа? Это действие нельзя отменить.",
-        reply_markup=reply_markup
-    )
-
-async def clear_memory_execute(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Выполнение очистки памяти"""
-    query = update.callback_query
-    await query.answer()
-    
-    callback_data = query.data
-    user_id = str(query.from_user.id)
-    
-    if callback_data == "clear_memory_cancel":
-        await query.edit_message_text("Очистка памяти отменена.")
-        return
+async def memory_clear_confirm_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Обработчик команды /memory_clear_confirm"""
+    user_id = str(update.effective_user.id)
     
     # Получаем агента и очищаем память
     agent = session_manager.get_agent_for_user(user_id)
-    count = agent.clear_episodic_memories()
-    
-    await query.edit_message_text(
-        f"Эпизодическая память персонажа {agent.character_name} очищена. Удалено {count} воспоминаний."
-    )
+    try:
+        count = agent.clear_episodic_memories()
+        
+        await update.message.reply_text(
+            f"Эпизодическая память персонажа {agent.character_name} очищена. Удалено {count} воспоминаний."
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при очистке памяти: {str(e)}")
+        await update.message.reply_text(f"Произошла ошибка при очистке памяти: {str(e)}")
 
 async def save_state(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обработчик команды /save"""
@@ -564,11 +473,15 @@ async def save_state(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     
     # Получаем агента и сохраняем его состояние
     agent = session_manager.get_agent_for_user(user_id)
-    agent.save_state()
-    
-    await update.message.reply_text(
-        f"Состояние персонажа {agent.character_name} успешно сохранено."
-    )
+    try:
+        agent.save_state()
+        
+        await update.message.reply_text(
+            f"Состояние персонажа {agent.character_name} успешно сохранено."
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при сохранении состояния: {str(e)}")
+        await update.message.reply_text(f"Произошла ошибка при сохранении состояния: {str(e)}")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обработчик обычных сообщений"""
@@ -602,8 +515,11 @@ async def periodic_save() -> None:
     """Периодическое сохранение всех сессий"""
     while True:
         await asyncio.sleep(600)  # 10 минут
-        session_manager.save_all_sessions()
-        logger.info("Выполнено периодическое сохранение сессий")
+        try:
+            session_manager.save_all_sessions()
+            logger.info("Выполнено периодическое сохранение сессий")
+        except Exception as e:
+            logger.error(f"Ошибка при периодическом сохранении: {str(e)}")
 
 async def post_init(application: Application) -> None:
     """Запуск периодического сохранения после инициализации приложения"""
@@ -613,53 +529,33 @@ async def post_init(application: Application) -> None:
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обработчик ошибок"""
     logger.error(f"Ошибка при обработке обновления {update}: {context.error}")
+    
+    # Если возможно, отправляем пользователю сообщение об ошибке
+    if update and update.effective_chat:
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text="Произошла ошибка при обработке вашего запроса. Пожалуйста, попробуйте еще раз или обратитесь к администратору."
+        )
 
 def main() -> None:
     """Запуск бота"""
     # Создаем приложение
     application = Application.builder().token(TOKEN).post_init(post_init).build()
     
-    # Регистрируем обработчик добавления воспоминания
-    memory_conv_handler = ConversationHandler(
-        entry_points=[CallbackQueryHandler(start_add_memory, pattern=r'^add_memory$')],
-        states={
-            ADDING_MEMORY: [MessageHandler(filters.TEXT & ~filters.COMMAND, memory_text_received)],
-            SETTING_IMPORTANCE: [CallbackQueryHandler(memory_importance_selected, pattern=r'^importance_')]
-        },
-        fallbacks=[CommandHandler('cancel', lambda u, c: ConversationHandler.END)],
-        per_chat=True
-    )
-    
-    # Регистрируем обработчик изменения отношений
-    relationship_conv_handler = ConversationHandler(
-        entry_points=[CallbackQueryHandler(modify_relationship_start, pattern=r'^modify_relationship$')],
-        states={
-            SELECTING_RELATIONSHIP: [CallbackQueryHandler(relationship_aspect_selected, pattern=r'^relationship_')],
-            CHANGING_RELATIONSHIP: [CallbackQueryHandler(change_relationship, pattern=r'^change_')]
-        },
-        fallbacks=[CommandHandler('cancel', lambda u, c: ConversationHandler.END)],
-        per_chat=True
-    )
-    
     # Добавляем обработчики команд
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("character", character_command))
     application.add_handler(CommandHandler("relationship", show_relationship))
+    application.add_handler(CommandHandler("relation_change", relation_change_command))
     application.add_handler(CommandHandler("memories", memories_command))
+    application.add_handler(CommandHandler("memory_add", memory_add_command))
+    application.add_handler(CommandHandler("memory_clear", memory_clear_command))
+    application.add_handler(CommandHandler("memory_clear_confirm", memory_clear_confirm_command))
     application.add_handler(CommandHandler("save", save_state))
     application.add_handler(CommandHandler("characters", characters_command))
     application.add_handler(CommandHandler("providers", providers_command))
-    application.add_handler(CommandHandler("clear_memory", clear_memory_command))
     application.add_handler(CommandHandler("model", model_command))
-    
-    # Добавляем обработчики разговоров
-    application.add_handler(memory_conv_handler)
-    application.add_handler(relationship_conv_handler)
-    
-    # Добавляем обработчики callback-запросов
-    application.add_handler(CallbackQueryHandler(clear_memory_confirm, pattern=r'^clear_memory$'))
-    application.add_handler(CallbackQueryHandler(clear_memory_execute, pattern=r'^clear_memory_'))
     
     # Добавляем обработчик обычных сообщений
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
@@ -668,6 +564,7 @@ def main() -> None:
     application.add_error_handler(error_handler)
     
     # Запускаем бота
+    logger.info("Запуск бота...")
     application.run_polling()
 
 if __name__ == "__main__":

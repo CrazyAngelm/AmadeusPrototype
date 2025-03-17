@@ -81,7 +81,7 @@ MODELS_INFO = {
             "cost_per_1k_input": "$2.00",
             "cost_per_1k_output": "$2.00"
         },
-        "deepseek-r1": {
+        "deepseek-reasoner": {
             "description": "Модель, ориентированная на логическое мышление, математические рассуждения и решение задач в реальном времени, сопоставимая с OpenAI o1",
             "max_tokens": 128000,
             "cost_per_1k_input": "$1.50",
@@ -209,7 +209,6 @@ class LLMProvider(ABC):
             return MODELS_INFO[provider][model_name]
         return {"description": "Информация о модели недоступна"}
 
-
 class OpenAIProvider(LLMProvider):
     """
     Провайдер для моделей OpenAI (GPT-4, GPT-3.5, etc.)
@@ -259,7 +258,6 @@ class OpenAIProvider(LLMProvider):
     @property
     def provider_name(self):
         return "OpenAI"
-
 
 class AnthropicProvider(LLMProvider):
     """
@@ -324,7 +322,6 @@ class AnthropicProvider(LLMProvider):
     @property
     def provider_name(self):
         return "Anthropic"
-
 
 class DeepSeekProvider(LLMProvider):
     """
@@ -395,7 +392,6 @@ class DeepSeekProvider(LLMProvider):
     def provider_name(self):
         return "DeepSeek"
 
-
 @lru_cache(maxsize=32)
 def get_provider(provider_name, model_name=None, api_key=None):
     """
@@ -444,7 +440,6 @@ def get_provider(provider_name, model_name=None, api_key=None):
         else:
             raise ValueError(error_msg)
 
-
 def list_available_providers():
     """
     Возвращает список доступных провайдеров и их моделей
@@ -461,7 +456,6 @@ def list_available_providers():
         }
     
     return providers
-
 
 def clear_provider_cache():
     """

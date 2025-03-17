@@ -465,7 +465,7 @@ class CharacterAgent:
         return messages
     
     def process_message(self, user_message, top_k=3, relevance_method='sigmoid', min_relevance=0.2,
-                        remember_interactions=True, update_relationship=True):
+                    remember_interactions=True, update_relationship=True):
         """
         Обработка сообщения пользователя и генерация ответа персонажа
         
@@ -507,19 +507,39 @@ class CharacterAgent:
         
         # Генерация ответа с использованием выбранного LLM провайдера
         try:
-            # Настройка температуры в зависимости от уровня стилизации
-            temperature_map = {'low': 0.5, 'medium': 0.8, 'high': 1.2}
-            temperature = temperature_map.get(self.style_level, 0.7)
+            # Получаем настройки LLM из персонажа, если они доступны
+            llm_settings = getattr(self.character, 'llm_settings', {})
+            
+            # Настройка температуры в зависимости от уровня стилизации и настроек персонажа
+            base_temperature = llm_settings.get('temperature', 0.7)
+            # Модификаторы для уровней стилизации
+            style_modifiers = {'low': 0.7, 'medium': 1.0, 'high': 1.2}
+            temperature = base_temperature * style_modifiers.get(self.style_level, 1.0)
+            
+            # Ограничиваем температуру разумными пределами
+            temperature = max(0.1, min(1.5, temperature))
+            
+            # Извлекаем другие настройки LLM из персонажа
+            max_tokens = llm_settings.get('max_tokens', 500)
             
             # Стоп-последовательности, чтобы избежать шаблонных фраз
             stop_sequences = ["Я AI", "Я искусственный интеллект", "Как ИИ", "Как языковая модель"]
+            
+            # Дополнительные параметры, которые можно передать провайдеру LLM
+            extra_params = {}
+            
+            # Добавляем дополнительные параметры, если они указаны в настройках персонажа
+            for param in ['top_p', 'top_k', 'frequency_penalty', 'presence_penalty']:
+                if param in llm_settings:
+                    extra_params[param] = llm_settings[param]
             
             # Генерация ответа
             answer = self.llm.generate(
                 messages=messages,
                 temperature=temperature,
-                max_tokens=500,
-                stop=stop_sequences
+                max_tokens=max_tokens,
+                stop=stop_sequences,
+                **extra_params  # Передаем дополнительные параметры
             )
             
             # Пост-обработка ответа для удаления нежелательных фраз

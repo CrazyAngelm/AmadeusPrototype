@@ -491,32 +491,64 @@ async def save_state(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         logger.error(f"Ошибка при сохранении состояния: {str(e)}")
         await update.message.reply_text(f"Произошла ошибка при сохранении состояния: {str(e)}")
 
+# Добавьте эту новую функцию в ваш telegram_bot.py
+async def keep_typing(chat_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Продолжает показывать статус 'печатает...' пока обрабатывается запрос"""
+    try:
+        while True:
+            await context.bot.send_chat_action(
+                chat_id=chat_id,
+                action='typing'
+            )
+            # Обновляем статус каждые 4 секунды
+            await asyncio.sleep(4)
+    except asyncio.CancelledError:
+        # Задача была отменена, это нормально
+        pass
+
+# Измените функцию handle_message на следующую:
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обработчик обычных сообщений"""
     user_id = str(update.effective_user.id)
     message_text = update.message.text
     
-    # Показываем статус "печатает..."
-    await context.bot.send_chat_action(
-        chat_id=update.effective_chat.id,
-        action='typing'
-    )
+    # Показываем статус "печатает..." и сохраняем сообщение в переменную
+    message = await update.message.reply_text("Обдумываю ответ...")
     
-    # Получаем ответ от персонажа
+    # Показываем статус "печатает..." продолжительное время
+    typing_task = asyncio.create_task(keep_typing(update.effective_chat.id, context))
+    
     try:
+        # Получаем ответ от персонажа
         response = session_manager.process_message(user_id, message_text)
+        
+        # Отменяем задачу с "печатает..."
+        typing_task.cancel()
         
         # Отправляем ответ по частям, если он слишком длинный
         if len(response) > 4000:
+            # Удаляем сообщение "Обдумываю ответ..."
+            await message.delete()
+            
             chunks = [response[i:i+4000] for i in range(0, len(response), 4000)]
             for chunk in chunks:
                 await update.message.reply_text(chunk)
         else:
-            await update.message.reply_text(response)
+            # Редактируем предыдущее сообщение вместо отправки нового
+            await message.edit_text(response)
+        
+    except asyncio.TimeoutError:
+        # Отменяем задачу с "печатает..."
+        typing_task.cancel()
+        await message.edit_text(
+            "Извините, я слишком долго думал над ответом. Пожалуйста, повторите запрос или попробуйте сформулировать короче."
+        )
     except Exception as e:
+        # Отменяем задачу с "печатает..."
+        typing_task.cancel()
         logger.error(f"Ошибка при обработке сообщения: {str(e)}")
-        await update.message.reply_text(
-            "Произошла ошибка при обработке вашего сообщения. Пожалуйста, попробуйте еще раз."
+        await message.edit_text(
+            f"Произошла ошибка при обработке вашего сообщения: {str(e)}"
         )
 
 async def periodic_save() -> None:
@@ -548,7 +580,7 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 def main() -> None:
     """Запуск бота"""
     # Создаем приложение
-    application = Application.builder().token(TOKEN).post_init(post_init).build()
+    application = Application.builder().token(TOKEN).post_init(post_init).connect_timeout(30).read_timeout(60).write_timeout(30).build()
     
     # Добавляем обработчики команд
     application.add_handler(CommandHandler("start", start))

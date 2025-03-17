@@ -116,7 +116,8 @@ class LLMProvider(ABC):
     def _raw_generate(self, messages: List[Dict[str, str]], 
                     temperature: float = 0.7, 
                     max_tokens: int = 500,
-                    stop: Optional[List[str]] = None) -> str:
+                    stop: Optional[List[str]] = None,
+                    **kwargs) -> str:
         """
         Непосредственное обращение к API провайдера LLM
         
@@ -125,6 +126,7 @@ class LLMProvider(ABC):
             temperature (float): Температура генерации
             max_tokens (int): Максимальное количество токенов
             stop (List[str], optional): Стоп-последовательности
+            **kwargs: Дополнительные параметры для передачи в API
             
         Returns:
             str: Сгенерированный текст
@@ -134,7 +136,8 @@ class LLMProvider(ABC):
     def generate(self, messages: List[Dict[str, str]], 
                 temperature: float = 0.7, 
                 max_tokens: int = 500,
-                stop: Optional[List[str]] = None) -> str:
+                stop: Optional[List[str]] = None,
+                **kwargs) -> str:
         """
         Генерация ответа на основе сообщений с повторными попытками
         
@@ -143,6 +146,7 @@ class LLMProvider(ABC):
             temperature (float): Температура генерации (0.0-1.0)
             max_tokens (int): Максимальное количество токенов в ответе
             stop (List[str], optional): Список строк, при обнаружении которых генерация останавливается
+            **kwargs: Дополнительные параметры для передачи в API
             
         Returns:
             str: Сгенерированный текст
@@ -156,7 +160,8 @@ class LLMProvider(ABC):
                     messages=messages,
                     temperature=temperature,
                     max_tokens=max_tokens,
-                    stop=stop
+                    stop=stop,
+                    **kwargs
                 )
                 
             except Exception as e:
@@ -241,17 +246,33 @@ class OpenAIProvider(LLMProvider):
         
         self.client = OpenAI(api_key=self.api_key)
     
-    def _raw_generate(self, messages, temperature=0.7, max_tokens=500, stop=None):
+    def _raw_generate(self, messages, temperature=0.7, max_tokens=500, stop=None, **kwargs):
         """
         Непосредственное обращение к API OpenAI
         """
-        response = self.client.chat.completions.create(
-            model=self.model_name,
-            messages=messages,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            stop=stop
-        )
+        # Создаем параметры для запроса
+        request_params = {
+            "model": self.model_name,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+        }
+        
+        # Добавляем стоп-последовательности, если они указаны
+        if stop:
+            request_params["stop"] = stop
+        
+        # Добавляем дополнительные параметры
+        for param, value in kwargs.items():
+            # Проверяем, соответствует ли параметр API OpenAI
+            if param in ["top_p", "frequency_penalty", "presence_penalty", "top_k"]:
+                if param == "top_k":  # OpenAI использует n вместо top_k
+                    request_params["n"] = value
+                else:
+                    request_params[param] = value
+        
+        # Отправляем запрос к API
+        response = self.client.chat.completions.create(**request_params)
         
         return response.choices[0].message.content
     
@@ -291,7 +312,7 @@ class AnthropicProvider(LLMProvider):
         
         self.client = Anthropic(api_key=self.api_key)
     
-    def _raw_generate(self, messages, temperature=0.7, max_tokens=500, stop=None):
+    def _raw_generate(self, messages, temperature=0.7, max_tokens=500, stop=None, **kwargs):
         """
         Непосредственное обращение к API Anthropic
         """
@@ -308,14 +329,30 @@ class AnthropicProvider(LLMProvider):
                     "content": message["content"]
                 })
         
-        response = self.client.messages.create(
-            model=self.model_name,
-            system=system_message,
-            messages=anthropic_messages,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            stop_sequences=stop
-        )
+        # Создаем параметры для запроса
+        request_params = {
+            "model": self.model_name,
+            "messages": anthropic_messages,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+        }
+        
+        # Добавляем системное сообщение, если оно есть
+        if system_message:
+            request_params["system"] = system_message
+        
+        # Добавляем стоп-последовательности, если они указаны
+        if stop:
+            request_params["stop_sequences"] = stop
+        
+        # Добавляем дополнительные параметры
+        for param, value in kwargs.items():
+            # Проверяем, соответствует ли параметр API Anthropic
+            if param in ["top_p", "top_k"]:
+                request_params[param] = value
+        
+        # Отправляем запрос к API
+        response = self.client.messages.create(**request_params)
         
         return response.content[0].text
     
@@ -355,7 +392,7 @@ class DeepSeekProvider(LLMProvider):
         
         self.api_base = "https://api.deepseek.com/v1"
     
-    def _raw_generate(self, messages, temperature=0.7, max_tokens=500, stop=None):
+    def _raw_generate(self, messages, temperature=0.7, max_tokens=500, stop=None, **kwargs):
         """
         Непосредственное обращение к API DeepSeek
         """
@@ -366,6 +403,7 @@ class DeepSeekProvider(LLMProvider):
             "Authorization": f"Bearer {self.api_key}"
         }
         
+        # Создаем параметры для запроса
         data = {
             "model": self.model_name,
             "messages": messages,
@@ -373,14 +411,21 @@ class DeepSeekProvider(LLMProvider):
             "max_tokens": max_tokens
         }
         
+        # Добавляем стоп-последовательности, если они указаны
         if stop:
             data["stop"] = stop
+        
+        # Добавляем дополнительные параметры
+        for param, value in kwargs.items():
+            # Проверяем, соответствует ли параметр API DeepSeek
+            if param in ["top_p", "top_k", "presence_penalty", "frequency_penalty"]:
+                data[param] = value
         
         response = requests.post(
             f"{self.api_base}/chat/completions",
             headers=headers,
             json=data,
-            timeout=30
+            timeout=60  # Увеличиваем таймаут до 60 секунд
         )
         
         if response.status_code != 200:

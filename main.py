@@ -1,11 +1,24 @@
 # main.py
 
 import os
+import sys
 import argparse
 import json
+import logging
 from datetime import datetime
 
+# Настраиваем логирование
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+
+logger = logging.getLogger(__name__)
+
+# Импортируем необходимые модули после настройки логирования
+# Сначала инициализируем загрузку персонажей из JSON
 from characters import list_characters, get_character
+from characters_loader import initialize_characters, create_example_characters
 from agent import CharacterAgent
 from llm_provider import list_available_providers
 
@@ -130,10 +143,18 @@ class CharacterAgentCLI:
         print(f"Имя: {self.character_name}")
         print(f"Эпоха: {character.era}")
         print(f"Описание: {character.description}")
+        
         print(f"\n--- Параметры LLM ---")
         print(f"Провайдер: {self.agent.llm.provider_name}")
         print(f"Модель: {self.agent.llm.model_name}")
         print(f"Информация о модели: {self.agent.llm.get_model_info(self.agent.llm.model_name)['description']}")
+        
+        # Добавляем информацию о настройках LLM из персонажа
+        if hasattr(character, 'llm_settings'):
+            print(f"\n--- Настройки LLM персонажа ---")
+            for key, value in character.llm_settings.items():
+                print(f"{key}: {value}")
+        
         print(f"\n--- Параметры агента ---")
         print(f"Модель эмбеддингов: {self.agent.model_name}")
         print(f"Тип индекса: {self.agent.index_type}")
@@ -432,6 +453,9 @@ class CharacterAgentCLI:
 
 def create_argument_parser():
     """Создание парсера аргументов командной строки"""
+    # Загружаем персонажей из JSON-файлов перед созданием парсера
+    initialize_characters("characters")
+    
     # Получение списка доступных персонажей
     available_characters = list_characters()
     character_names = [name for name, _ in available_characters]
@@ -492,6 +516,17 @@ def create_argument_parser():
                         help='API ключ для провайдера (если не указан, берется из переменных окружения)')
     parser.add_argument('--providers', action='store_true',
                         help='Показать список доступных провайдеров LLM и их моделей')
+    
+    # Дополнительные параметры для работы с JSON-файлами персонажей
+    parser.add_argument('--characters-dir', type=str, default='characters',
+                      help='Директория с JSON-файлами персонажей')
+    parser.add_argument('--init-examples', action='store_true',
+                      help='Создать примеры JSON-файлов персонажей, если их нет')
+    parser.add_argument('--convert', action='store_true',
+                      help='Конвертировать встроенных персонажей в JSON-файлы')
+    
+    parser.add_argument('--telegram', action='store_true',
+                  help='Запустить в режиме Telegram бота')
     
     return parser
 
@@ -568,11 +603,29 @@ def main():
     parser = create_argument_parser()
     args = parser.parse_args()
     
+    # Создаем директорию с персонажами, если не существует
+    os.makedirs(args.characters_dir, exist_ok=True)
+    
+    # Обрабатываем аргументы для работы с JSON-файлами персонажей
+    if args.init_examples:
+        print(f"Создание примеров JSON-файлов персонажей в директории {args.characters_dir}...")
+        create_example_characters(args.characters_dir)
+        print("Примеры персонажей созданы. Запустите программу без '--init-examples' для использования.")
+        return
+    
+    if args.convert:
+        print(f"Конвертация встроенных персонажей в JSON-файлы в директории {args.characters_dir}...")
+        from characters_loader import convert_existing_characters_to_json
+        convert_existing_characters_to_json(args.characters_dir)
+        print("Конвертация завершена. Запустите программу без '--convert' для использования.")
+        return
+    
     # Если запрошен список персонажей, показываем его и выходим
     if args.list:
         print("Доступные персонажи:")
         for name, desc in list_characters():
-            print(f"- {name}: {desc}")
+            character = get_character(name)
+            print(f"- {name} ({character.era}): {desc}")
         return
     
     # Если запрошен список провайдеров, показываем его и выходим
@@ -583,6 +636,18 @@ def main():
             for model in info['models']:
                 print(f"  - {model}")
         return
+    
+    # Если запрошен запуск Telegram бота
+    if args.telegram:
+        try:
+            from telegram_bot import main as telegram_main
+            print("Запуск Telegram бота...")
+            telegram_main()
+            return
+        except ImportError as e:
+            print(f"Ошибка импорта модуля telegram_bot: {str(e)}")
+            print("Убедитесь, что установлен пакет python-telegram-bot (pip install python-telegram-bot)")
+            return
     
     # Инициализируем агента
     try:

@@ -10,3 +10,6 @@ python main.py --character "Курису Макисэ" --index-type hnsw --metri
 python main.py --character "Курису Макисэ" --index-type hnsw --metric cosine --style high --llm-provider deepseek --llm-model deepseek-chat
 
 python main.py --character "Курису Макисэ" --index-type hnsw --metric cosine --style high --llm-provider anthropic --llm-model claude-3-haiku-20240307
+
+
+python main.py --telegram --characters-dir characters

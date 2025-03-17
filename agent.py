@@ -699,7 +699,46 @@ class CharacterAgent:
         self._save_relationship()
         
         print(f"Состояние агента {self.character_name} успешно сохранено")
+
+    def setup_llm(self, provider_name=None, model_name=None, api_key=None):
+        """
+        Инициализирует или переинициализирует LLM провайдера с новыми параметрами
         
+        Args:
+            provider_name (str, optional): Имя провайдера. Если None, используется текущий.
+            model_name (str, optional): Название модели. Если None, используется текущая или по умолчанию.
+            api_key (str, optional): API ключ. Если None, используется из переменных окружения.
+            
+        Returns:
+            bool: True если инициализация успешна, иначе False
+        """
+        from llm_provider import get_provider
+        
+        try:
+            # Используем текущие значения, если новые не предоставлены
+            provider = provider_name or self.llm_provider_name
+            model = model_name or self.llm_model_name
+            
+            # Обновляем атрибуты
+            self.llm_provider_name = provider
+            self.llm_model_name = model
+            
+            # Переинициализируем LLM провайдера
+            self.llm = get_provider(
+                provider_name=provider,
+                model_name=model,
+                api_key=api_key
+            )
+            
+            print(f"LLM провайдер переинициализирован: {self.llm.provider_name}, модель: {self.llm.model_name}")
+            return True
+        
+        except Exception as e:
+            import logging
+            logging.error(f"Ошибка при инициализации LLM: {str(e)}")
+            print(f"Ошибка при инициализации LLM: {str(e)}")
+            return False
+
     @classmethod
     def load_or_create(cls, character_name, user_id="default", model_name='paraphrase-multilingual-MiniLM-L12-v2', 
                        index_type='flat', use_cosine=True, style_level='high',
